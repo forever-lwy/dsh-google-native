@@ -1,9 +1,9 @@
 export const providerStyles = `
 .dsh-google-provider-settings{font-size:14px;line-height:1.5;color:var(--dsw-alias-label-primary,#202126)}
+.dsh-google-provider-card{margin-top:12px;font-size:14px;color:var(--dsw-alias-label-primary,#202126)}
+.dsh-google-provider-card-panel{padding-top:18px}
 .dsh-google-provider-settings h3{font-size:16px;margin:0 0 12px;font-weight:600}
-.dsh-google-provider-tabs{display:flex;gap:6px;margin-bottom:20px;border-bottom:1px solid var(--dsw-alias-border-l1,#ddd);padding-bottom:8px}
-.dsh-google-provider-tabs button,.dsh-google-provider-button{font:inherit;border:1px solid var(--dsw-alias-border-l2,#ccc);border-radius:7px;padding:7px 12px;background:transparent;color:inherit;cursor:pointer}
-.dsh-google-provider-tabs button[aria-selected=true]{background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.12));font-weight:600}
+.dsh-google-provider-button{font:inherit;border:1px solid var(--dsw-alias-border-l2,#ccc);border-radius:7px;padding:7px 12px;background:transparent;color:inherit;cursor:pointer}
 .dsh-google-provider-button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.12))}
 .dsh-google-provider-settings button:disabled{opacity:.5;cursor:default}
 .dsh-google-provider-settings button:focus-visible,.dsh-google-provider-settings input:focus-visible,.dsh-google-provider-settings select:focus-visible{outline:2px solid var(--dsw-focus-ring-color,#4e73df);outline-offset:2px}

@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-api-remote-access/client'
-import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings-models/client'
 import type {} from './provider-locales.js'
 import type {
   GoogleProviderConnection, GoogleProviderModel, GoogleProviderProfileView, GoogleProviderSettings,
@@ -26,7 +26,10 @@ interface Draft {
   manual: string
   discovered: boolean
 }
-type Props = PropsRuntime<'plugins.bundle.config'> & PropsLocale<'googleProviderSettings'> & ProviderSettingsFace
+type Props = PropsRuntime<'settings.models.provider-card'> & PropsLocale<'googleProviderSettings'> & ProviderSettingsFace
+type FormProps = Pick<Props, 'read' | 'discover' | 'save' | 'useRemoteAccess' | 't'> & {
+  providerId: ProviderProfile['provider']
+}
 
 function initialDraft(profile: ProviderProfile): Draft {
   return { connection: { ...profile.connection }, models: profile.models.map(model => ({ ...model })),
@@ -40,19 +43,28 @@ function selectedModels(draft: Draft): ProviderModel[] {
   }))
 }
 
-/** The Plugins page owns the title and navigation; this entry owns its form. */
+/** Each Models-page provider card owns one route's configuration form. */
 export function ProviderSettings(props: Props) {
-  if (props.view === 'summary') return <span>{props.t('summary')}</span>
-  return <ProviderSettingsPage {...props}/>
+  const [open, setOpen] = useState(false)
+  const [visited, setVisited] = useState(false)
+  const panelId = useId()
+  const providerId = props.provider.provider
+  if (providerId !== 'google-ai-studio' && providerId !== 'google-vertex-native') return null
+  return <div className="dsh-google-provider-card" data-google-provider-card={providerId}>
+    <button type="button" className="dsh-google-provider-button" aria-expanded={open} aria-controls={panelId}
+      onClick={() => { setOpen(value => !value); setVisited(true) }}>{props.t(open ? 'closeConfiguration' : 'configure')}</button>
+    <div id={panelId} hidden={!open} className="dsh-google-provider-card-panel">
+      {visited && <ProviderSettingsPage key={providerId} {...props} providerId={providerId}/>}
+    </div>
+  </div>
 }
 
-export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t }: Props) {
+export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t, providerId: provider }: FormProps) {
   const canRead = useRemoteAccess('nativeGoogleSettings/get')
   const canDiscover = useRemoteAccess('nativeGoogleSettings/discover')
   const canSave = useRemoteAccess('nativeGoogleSettings/save')
   const [snapshot, setSnapshot] = useState<ProviderSettingsSnapshot>()
   const [drafts, setDrafts] = useState<Record<string, Draft>>({})
-  const [provider, setProvider] = useState<ProviderProfile['provider']>('google-ai-studio')
   const [loadError, setLoadError] = useState(false)
   const [status, setStatus] = useState<'idle' | 'discovering' | 'saving' | 'saved' | 'discover-error' | 'save-error' | 'credential-error' | 'conflict-error'>('idle')
   const [reload, setReload] = useState(0)
@@ -72,11 +84,10 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t 
       if (controller.signal.aborted || current !== generation.current) return
       setSnapshot(value)
       setDrafts(Object.fromEntries(value.profiles.map(profile => [profile.provider, initialDraft(profile)])))
-      if (!value.profiles.some(profile => profile.provider === provider)) setProvider(value.profiles[0]?.provider ?? 'google-ai-studio')
     }).catch(() => { if (!controller.signal.aborted && current === generation.current) setLoadError(true) })
     return () => { controller.abort(); operation.current?.abort(); generation.current++ }
-    // Selecting a provider retains unsaved drafts; only an explicit reload discards them.
-  }, [canRead, read, reload])
+    // Each card addresses one route; an explicit reload discards its draft.
+  }, [canRead, read, reload, provider])
 
   const profile = snapshot?.profiles.find(item => item.provider === provider)
   const draft = drafts[provider]
@@ -100,13 +111,6 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t 
   const select = (ids: string[], checked: boolean) => patchDraft(old => ({ ...old,
     selected: checked ? [...new Set([...old.selected, ...ids])] : old.selected.filter(id => !ids.includes(id)),
   }))
-  const switchProvider = (next: ProviderProfile['provider']) => {
-    operation.current?.abort()
-    operation.current = undefined
-    generation.current++
-    setProvider(next)
-    setStatus('idle')
-  }
 
   const fetchModels = async () => {
     if (!draft || busy || !canDiscover) return
@@ -181,13 +185,7 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t 
   </label>
 
   return <div className="dsh-google-provider-settings" data-google-provider-settings>
-    <div role="tablist" aria-label={t('heading')} className="dsh-google-provider-tabs">
-      {snapshot.profiles.map(item => <button key={item.provider} type="button" role="tab" aria-selected={item.provider === provider}
-        aria-controls={`${baseId}-panel`} disabled={status === 'saving'} onClick={() => switchProvider(item.provider)}>
-        {item.provider === 'google-ai-studio' ? t('aiStudio') : t('vertex')}
-      </button>)}
-    </div>
-    <div id={`${baseId}-panel`} role="tabpanel" aria-label={provider === 'google-ai-studio' ? t('aiStudio') : t('vertex')}>
+    <div id={`${baseId}-panel`} role="region" aria-label={provider === 'google-ai-studio' ? t('aiStudio') : t('vertex')}>
       {(!canSave || !snapshot.writable) && <p className="dsh-google-provider-hint">{t('readOnly')}</p>}
       <label className="dsh-google-provider-check"><input type="checkbox" checked={draft.connection.enabled} disabled={!editable}
         onChange={event => connection('enabled', event.currentTarget.checked)}/><span>{t('enabled')}</span></label>

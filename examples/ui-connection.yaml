@@ -1,4 +1,4 @@
-# 常用连接设置可直接在：插件 → 已安装 → dsh-google-native → 详情 / 配置 中编辑。
+# 常用连接设置可直接在：设置 → 模型 → 对应 Google 提供商 → 配置 Google 提供商 中编辑。
 # 此文件仅说明对应的配置字段；不要用它覆盖整个 profile。
 # API Key 在界面的“新的 API Key”中输入，配置中只保存 apiKeyEnv 引用名称。
 # gateway.example 是格式占位地址，需要替换为提供 Google 原生协议的上游。

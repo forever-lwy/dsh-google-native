@@ -1,6 +1,7 @@
 export const providerEn = {
   summary: 'Configure Google connections and choose models from your upstream service.',
   heading: 'Google providers',
+  configure: 'Configure Google provider', closeConfiguration: 'Collapse configuration',
   aiStudio: 'AI Studio', vertex: 'Vertex AI',
   loading: 'Loading provider settings…', loadError: 'Could not load settings.', retry: 'Reload settings',
   noRead: 'You do not have permission to view these settings.', readOnly: 'These settings are read-only.',
@@ -31,6 +32,7 @@ export const providerEn = {
 export const providerZh: Record<keyof typeof providerEn, string> = {
   summary: '配置 Google 连接地址、凭据，并从上游勾选要使用的模型。',
   heading: 'Google 供应商', aiStudio: 'AI Studio', vertex: 'Vertex AI',
+  configure: '配置 Google 提供商', closeConfiguration: '收起配置',
   loading: '正在读取供应商设置…', loadError: '供应商设置读取失败。', retry: '重新读取配置',
   noRead: '没有查看这些设置的权限。', readOnly: '当前配置仅可查看。',
   enabled: '启用此供应商', baseURL: 'Base URL', baseURLHint: '留空使用 Google 官方地址；代理或网关需提供原生 Gemini API 地址。',

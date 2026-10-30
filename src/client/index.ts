@@ -5,7 +5,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-api-gateway/client'
-import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings-models/client'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import { chatRemoteInfo, getChatOptions, setChatOptions } from '../chat-remote.js'
 import { NativeOptions, type NativeOptionsFace } from './NativeOptions.js'
@@ -39,32 +39,37 @@ export async function apply(ctx: Context): Promise<void> {
       document.head.appendChild(style)
       return () => style.remove()
     }, 'google-native: styles')
-    ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
-      name: 'conversation.input.left', id: 'google-native-options', order: 15, locale: 'googleNative',
-      inject: (sessionId): NativeOptionsFace => {
-        const directory = ctx.modelDirectories.directoryFor(sessionId)
-        // Host and browser Context declarations share this package's build;
-        // bind the browser service face explicitly at this boundary.
-        const sessions = ctx.get('sessions') as unknown as ISessions
-        const available = sessions.subagentAddress(sessionId) === undefined
-        return {
-          available, directory: directory.store,
-          loadDirectory: () => { if (available) void directory.load().catch(() => { /* directory owns errors */ }) },
-          read: (route, signal) => getChatOptions(ctx.remote, { sessionId, ...route }, signal),
-          save: (route, choices, expectedRevision, signal) => setChatOptions(ctx.remote,
-            { sessionId, ...route, choices, expectedRevision }, signal),
-          beginSave: reason => blockWhileSaving(ctx.conversation.blocks, sessionId, reason),
-        }
-      },
-    }, NativeOptions))
-    const settingsFace: ProviderSettingsFace = {
-      read: signal => getProviderSettings(ctx.remote, signal),
-      discover: (request, signal) => discoverProviderModels(ctx.remote, request, signal),
-      save: (request, signal) => saveProviderSettings(ctx.remote, request, signal),
-    }
-    ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
-      name: 'plugins.bundle.config', key: 'dsh-google-native', locale: 'googleProviderSettings', inject: () => settingsFace,
-    }, ProviderSettings))
+    // $mount publishes separate Cordis namespace services. Bind callbacks in
+    // their injected scope: access through the parent plugin's `remote` alone
+    // is forbidden once that plugin runs in its real loader-created fiber.
+    ctx.inject(['remote.nativeGoogleChat', 'remote.nativeGoogleSettings'], remoteCtx => {
+      remoteCtx.slots.inject('conversation.input.left', () => remoteCtx.slots.register({
+        name: 'conversation.input.left', id: 'google-native-options', order: 15, locale: 'googleNative',
+        inject: (sessionId): NativeOptionsFace => {
+          const directory = remoteCtx.modelDirectories.directoryFor(sessionId)
+          // Host and browser Context declarations share this package's build;
+          // bind the browser service face explicitly at this boundary.
+          const sessions = remoteCtx.get('sessions') as unknown as ISessions
+          const available = sessions.subagentAddress(sessionId) === undefined
+          return {
+            available, directory: directory.store,
+            loadDirectory: () => { if (available) void directory.load().catch(() => { /* directory owns errors */ }) },
+            read: (route, signal) => getChatOptions(remoteCtx.remote, { sessionId, ...route }, signal),
+            save: (route, choices, expectedRevision, signal) => setChatOptions(remoteCtx.remote,
+              { sessionId, ...route, choices, expectedRevision }, signal),
+            beginSave: reason => blockWhileSaving(remoteCtx.conversation.blocks, sessionId, reason),
+          }
+        },
+      }, NativeOptions))
+      const settingsFace: ProviderSettingsFace = {
+        read: signal => getProviderSettings(remoteCtx.remote, signal),
+        discover: (request, signal) => discoverProviderModels(remoteCtx.remote, request, signal),
+        save: (request, signal) => saveProviderSettings(remoteCtx.remote, request, signal),
+      }
+      remoteCtx.slots.inject('settings.models.provider-card', () => remoteCtx.slots.register({
+        name: 'settings.models.provider-card', key: 'dsh-google-native', locale: 'googleProviderSettings', inject: () => settingsFace,
+      }, ProviderSettings))
+    })
   } catch (error) {
     await unmountSettings?.()
     await unmountRemote()
