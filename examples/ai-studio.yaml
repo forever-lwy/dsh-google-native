@@ -1,0 +1,28 @@
+# 这是插件条目的配置示例，不要用它覆盖已有 profile 文件。
+# 在 dsh 凭据管理中保存 GOOGLE_API_KEY，或将同名变量传入 dsh 容器。
+- id: dsh-google-native
+  config:
+    aiStudio:
+      enabled: true
+      apiKeyEnv: GOOGLE_API_KEY
+      nativeTools:
+        search: true
+      generationConfig:
+        thinkingConfig:
+          includeThoughts: true
+      models:
+        - id: gemini-3.8-flash
+          name: Gemini 3.8 Flash
+          reasoning:
+            - id: low
+              name: 低
+              thinkingLevel: LOW
+            - id: medium
+              name: 中
+              thinkingLevel: MEDIUM
+            - id: high
+              name: 高
+              thinkingLevel: HIGH
+          defaultReasoning: medium
+    vertex:
+      enabled: false

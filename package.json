@@ -1,0 +1,30 @@
+{
+  "name": "dsh-google-native",
+  "version": "0.1.0",
+  "description": "Native Google Gemini AI Studio and Vertex AI provider for DeepSeek Harness",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {".": {"types": "./lib/index.d.ts", "default": "./lib/index.js"}},
+  "files": ["lib", "README.md", "LICENSE", "examples", "cordis.patch.yml"],
+  "license": "MIT",
+  "engines": {"node": ">=22", "dsh": "0.2.1-rc.5"},
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --test-isolation=none test/*.test.mjs",
+    "prepare": "npm run build"
+  },
+  "dependencies": {"@google/genai": "2.32.0", "@deepseek-ai/schemastery": "~3.18.5"},
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-attachment": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-settings": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-credentials": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-launch-environment": "0.2.1-rc.5",
+    "@deepseek-ai/cordis-plugin-loader": "~1.0.6"
+  },
+  "devDependencies": {"typescript": "~5.9.3", "@types/node": "^24.0.0", "@deepseek-ai/dsh-app-boot": "0.2.1-rc.5"},
+  "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+}

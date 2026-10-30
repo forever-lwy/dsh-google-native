@@ -1,0 +1,162 @@
+# Google 原生供应商插件
+
+`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。发布版本 `0.1.0` 针对 dsh `0.2.1-rc.5`，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
+
+## 能力范围
+
+普通 dsh 对话通过 Gemini `generateContentStream`，支持流式文本、思考摘要与强度配置、函数调用，以及模型原生接受的图片、视频、音频、PDF 等文件输入。上传文件的原始数据直接交给 Google；插件不先做 OCR、转录、视频拆帧或 PDF 文本提取。
+
+原生生成参数可配置，例如结构化 JSON 输出、采样、停止序列、缓存引用、安全配置、媒体分辨率、音频/图片响应设置。原生工具包括 Google Search、URL Context、Code Execution、Google Maps，以及后端支持的 File Search / Vertex 检索。具体模型、地区、权限、工具组合和请求大小限制由 Google API 判断；启用某项能力不代表所有模型均支持。
+
+`nativeGoogle` 服务提供官方 SDK 客户端供其他服务端插件调用。Live 实时音视频、Veo 视频生成、Imagen、Embeddings、Batches、缓存与文件管理等拥有各自 API；它们可通过该程序化入口使用，不会自动变成 dsh 聊天界面里的录音、播放、批任务或视频生成按钮。两套 Google API 也并非每项功能完全对等。
+
+dsh 单条回复使用一个候选结果，因此普通对话要求 `candidateCount: 1`，函数参数必须以完整 JSON 接收。多候选、增量函数参数以及其他无法用通用 dsh chunk 表示的行为，使用下面的原生 SDK 服务入口。
+
+## 安装与发布
+
+本项目是独立源码目录。构建、修改源码和 Git 提交不会切换运行实例中的插件。
+
+```sh
+npm ci
+npm run check
+npm run build
+npm test
+npm pack --pack-destination ../releases
+```
+
+在 dsh 的“插件 → 添加插件”中输入下面的**容器路径**，由用户确认安装和启用：
+
+```text
+/plugins/releases/dsh-google-native-0.1.0.tgz
+```
+
+不要使用 `link:` 将源码连接到日常 `web` profile。下一次测试应提升版本并生成新文件名。现有 HMR 可以应用用户主动安装的版本；只有界面明确提示 `restart-required` 才需要安排重启。dsh `0.2.1-rc.5` 普通“已安装”页面没有第三方插件通用更新按钮，不能将较新上游界面的行为视为已具备。
+
+Git 来源发布需要固定完整 commit SHA，市场记录也应引用该 SHA。本项目提供 `prepare` 构建；安装时如果 pnpm 请求构建许可，应按具体插件提示确认。仓库不包含市场部署，也不会自动创建 GitHub 仓库、推送、发布索引或安装到运行实例。
+
+## 配置
+
+插件注册两个供应商路由：`google-ai-studio`、`google-vertex-native`。两套配置分别位于 `aiStudio` 和 `vertex`，可同时启用。默认模型目录包含 Gemini 2.5 Flash / Pro、Gemini 3.8 Flash 和 Gemini 4 Argon；该目录是配置候选，不是针对当前账号或地区的可用性探测。可在 `models` 添加账号可用的原生模型 ID，并为自定义模型显式声明思考选项。安装后在模型界面选择对应供应商和模型。
+
+dsh `0.2.1-rc.5` 的内置供应商连接编辑器只识别内置插件，不能在本插件的供应商卡片中保存 Google 连接配置，也没有自动渲染全部参数的通用设置表单。请使用原生配置编辑器，或按下列示例编辑 profile 配置。安装的 bundle 创建 ID 为 `dsh-google-native` 的插件条目；示例以 `- id: dsh-google-native` 覆盖该条目的配置，可合并到相应 profile 的 `cordis.patch.yml`，不要覆盖整个文件。不要将示例改成仅有 `name` 的新条目。插件本身不修改日常部署配置。
+
+配置后，模型选择器可以选择本插件公布的模型。当前宿主的 Models 页可能将未使用 API key 的 Vertex ADC 显示为缺少凭据；该就绪提示不阻止模型选择或实际调用。
+
+| 配置示例 | 认证与用途 |
+| --- | --- |
+| [AI Studio](examples/ai-studio.yaml) | `GOOGLE_API_KEY` 凭据引用，启用原生搜索 |
+| [Vertex ADC](examples/vertex-adc.yaml) | project/location 加 ADC 或服务账号文件 |
+| [Vertex Express](examples/vertex-express.yaml) | `GOOGLE_VERTEX_API_KEY`；不设置 project/location/keyFile |
+| [原生参数与思考档位](examples/native-parameters.yaml) | 模型目录、thinkingLevel、搜索和 URL Context |
+
+AI Studio 使用 API key；标准 Vertex 使用 project/location 和 Application Default Credentials（ADC）或服务账号，Vertex Express 使用其专用 API key。`apiKeyEnv` 字段保存凭据引用名，不填真实 key。未配置某个后端时可设其 `enabled: false`。服务账号使用 `keyFile`；省略时由 Google SDK 读取 ADC。
+
+密钥应通过 dsh 凭据管理或运行容器的环境变量提供。服务账号文件路径必须是**容器可读路径**；例如宿主机 `data/google/service-account.json` 在现有持久挂载下对应 `/home/node/google/service-account.json`。路径示例不表示已创建该文件或配置凭据。不要将密钥、服务账号 JSON、部署 `.env` 或 dsh 数据加入插件仓库或版本包。
+
+Docker 进程只能读取传入容器的环境变量。宿主机 shell 中 `export` 的变量不会自动出现在已经运行的容器中。使用现有挂载中的服务账号文件或界面凭据时，不必为了开发插件修改部署。
+
+### 思考
+
+思考摘要通过 `thinkingConfig.includeThoughts` 控制，是 Google 提供的摘要。Gemini 2.5 使用 `thinkingBudget`，`-1` 表示动态预算；支持关闭的模型使用 `0`。Gemini 3 及以后使用 `thinkingLevel`。各模型允许的档位不同，例如 2.5 Pro 不支持关闭思考；`minimal` 也不等于保证完全关闭。不要同时配置预算和档位。
+
+Gemini 3.8 Flash 和 Gemini 4 Argon 的预设档位均为 `LOW` / `MEDIUM` / `HIGH`，默认 `MEDIUM`，不提供 `MINIMAL` 或预算模式。Google 文档已列出这两个模型的 AI Studio 和 Vertex 原生 API；实际权限与地区仍由相应账号决定。Gemini 4 Argon 的长输出 continuation 等专用流程，可通过原生 SDK 服务使用；普通聊天保持一次生成流的行为。
+
+插件保留 Google 返回的 `thoughtSignature` 及原始 Part 位置，以支持工具调用后的继续推理。签名是不可解释的协议数据，不是可展示的思考文本。不要手工删除、合并或替换原生回放信息。
+
+### 原生参数与工具
+
+`generationConfig` 使用官方 JavaScript SDK 的 `GenerateContentConfig` 字段名，例如 `thinkingConfig`、`responseMimeType`、`responseJsonSchema`、`mediaResolution`、`cachedContent`、`safetySettings` 和 `tools`。这与 REST 请求中把采样等参数嵌套在 `generationConfig` 的层级不同。
+
+原生搜索工具的 SDK 形态如下：
+
+```yaml
+generationConfig:
+  tools:
+    - googleSearch: {}
+    - urlContext: {}
+```
+
+`httpOptions.extraBody` 使用对应 Google **REST 后端**的请求体形态，供 SDK 尚未建模的字段使用；它不是放置任意 SDK 配置的容器。其内容可能覆盖构造出的请求，需要了解具体 API 语义。Google 仍会校验未知或不支持的字段，不应依靠它绕过模型限制。
+
+参数优先级为：本次 dsh 调用的采样、输出上限、停止序列和思考选项 > `models[].generationConfig` > 供应商级 `generationConfig`。模型级参数与供应商参数按字段覆盖，`thinkingConfig`、`httpOptions` 单独合并；不要假设所有任意嵌套 JSON 都会递归合并。dsh 的函数声明会追加到原生工具列表中。请求取消信号和必要归因头由插件设置。
+
+常用工具：
+
+| SDK 工具字段 | 用途 / 范围 |
+| --- | --- |
+| `googleSearch` | Google 原生搜索与 grounding |
+| `urlContext` | 读取指定公开 URL；不代替音视频文件输入 |
+| `codeExecution` | Google 沙箱代码执行 |
+| `googleMaps` | 地图 grounding；依模型、地区与语言支持 |
+| `fileSearch` | AI Studio 的 File Search；需先准备相应存储 |
+| `retrieval`、`enterpriseWebSearch` | Vertex 的检索能力；需对应资源和权限 |
+
+这些工具由 Google 在服务端运行，与 dsh 自身的函数工具不同。不要将所有工具默认一并开启。Google 对不同模型的工具组合支持会变化，API 返回的错误应作为实际限制判断依据。
+
+### 搜索来源与显示
+
+Google 原生搜索返回 `groundingMetadata`，包括来源、支持片段、搜索词，以及可能的 `searchEntryPoint.renderedContent`。这些字段不能被当作普通模型文字随意丢弃。Google 的搜索建议与归因展示要求需要由使用原生服务的前端正确处理；dsh 通用聊天界面没有因此自动增加一个完整 Google 搜索建议组件。不要把保留原始 metadata 等同于已经完成所有专用 UI 展示。
+
+### 文件与多模态限制
+
+在普通聊天界面上传附件即可，插件在请求构建期间读取原有持久附件引用，恢复原始文件输入，不依赖聊天文本中的文件路径或特殊标记。文件会以 `inlineData` 或 `fileData` 发送。AI Studio 默认超过 8 MiB 时使用 Files API，并等待文件处理到 `ACTIVE`；`FAILED`、等待超时或取消会明确结束请求。上传句柄缓存仅在其有效期内复用；Google 临时文件按远端有效期过期，插件不主动删除远端文件。
+
+插件对 Vertex 本地附件默认采用最高 16 MiB 的保守 inline 限制，更大文件需要通过程序化原生 SDK 请求传入具有读取权限的 Cloud Storage `gs://` URI。通用聊天附件不会自动上传到用户的 Cloud Storage。AI Studio Files API 的句柄不能直接视为 Vertex 通用文件句柄。
+
+`files` 可调整 `inlineThresholdBytes`、`inlineMaxBytes`、`maxFileBytes`、`pollIntervalMs`、`processingTimeoutMs`。这些设置控制插件传输策略；提高插件上限不会提高 Google 或 dsh 本身的限制。默认单文件上限为 300 MiB。
+
+当前 Google GenerateContent 文件指南给出的典型限制为：inline 请求总 payload 100 MB、PDF 50 MB / 1000 页、Files API 单文件 2 GB（保存 48 小时）、外部 HTTPS 文件每项 15 MB。限制随后端、模型和输入方式变化，dsh 上传限制也可能更低。PDF/音视频在原生 API 可用并不保证某个模型接受所有 MIME 类型或大小。
+
+原生响应中的图片保存为图片附件，其他媒体保存为文件附件。Gemini 流式 `audio/L16;codec=pcm;rate=24000` 是 16 位小端 PCM，插件将其加上 WAV 文件头，生成可下载播放的 `.wav`；原始 PCM Part 仍保留用于协议回放。常见 WAV、MP3、OGG、FLAC、AAC、MP4、WebM、PDF、JSON 和文本保留原始数据及相应扩展名。未知格式保存为 `.bin`，无法保证通用界面预览或跨模型重新输入；专门的播放器及 Live 实时音频界面需要使用原生服务另行实现。
+
+## 原生 SDK 服务
+
+服务端插件声明 `inject: ['nativeGoogle']` 后可取得当前供应商配置和认证对应的 SDK 客户端。该对象是可信服务端代码使用的完整 SDK，不应直接暴露给浏览器或不可信请求。
+
+```ts
+import type { Context } from '@deepseek-ai/cordis'
+import type {} from 'dsh-google-native'
+
+export const inject = ['nativeGoogle']
+
+export function apply(ctx: Context) {
+  // 在插件的实际请求处理函数中调用；不要在启动时自动产生计费请求。
+  async function summarizeCloudPdf(uri: string, signal: AbortSignal) {
+    return ctx.nativeGoogle.generate('google-vertex-native', {
+      model: 'gemini-2.5-flash',
+      contents: [{
+        role: 'user',
+        parts: [
+          { text: '总结此 PDF 的主要结论。' },
+          { fileData: { fileUri: uri, mimeType: 'application/pdf' } },
+        ],
+      }],
+      config: { abortSignal: signal },
+    })
+  }
+
+  // 将 summarizeCloudPdf 注册到自己的工具或应用接口。
+}
+```
+
+`ctx.nativeGoogle.generate(provider, parameters)` 与 `stream(provider, parameters)` 分别直通官方 `models.generateContent` / `generateContentStream`，保留原始返回值。`await ctx.nativeGoogle.client(provider)` 可调用完整 SDK，例如 `client.live`、`client.batches`、`client.models.embedContent`、`generateImages`、`generateVideos`、`client.files` 与 `client.caches`。调用方负责各 API 的请求参数、取消、操作轮询、权限及 UI。
+
+**原生服务不会自动合并聊天用的 `generationConfig`、`nativeTools`、模型思考档位或 dsh 会话历史。** 它复用供应商连接与认证，调用参数由调用方完整提供；这样不会改变原生 API 语义。这些直接调用也不会自动写入 dsh 聊天记录，调用方应按自己的功能明确记录可重建的输入与结果。
+
+## 验证与使用边界
+
+本地检查、构建和测试验证适配、请求与流式回放行为；没有使用用户的 Google 凭据进行真实计费请求。正式使用前，在界面安装准备好的版本，再用自己的账号分别验证文本、思考、原生文件和搜索。账号权限、地区可用性、实际配额及远端响应仍需真实环境确认。
+
+## 官方参考
+
+- [Google Gen AI JavaScript SDK](https://github.com/googleapis/js-genai)
+- [GenerateContent 思考配置](https://ai.google.dev/gemini-api/docs/generate-content/thinking)
+- [Gemini 3.8 Flash 模型](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash)
+- [Gemini 4 Argon 模型](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon)
+- [Vertex Gemini 3.8 Flash](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-8-flash)
+- [Vertex Gemini 4 Argon](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/4-argon)
+- [思考签名与函数调用回放](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures)
+- [原生 Google Search](https://ai.google.dev/gemini-api/docs/generate-content/google-search)
+- [原生文件输入方式](https://ai.google.dev/gemini-api/docs/generate-content/file-input-methods)
+- [语音生成与 PCM 格式](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation)
+- [Vertex AI 文档](https://cloud.google.com/vertex-ai/generative-ai/docs/overview)

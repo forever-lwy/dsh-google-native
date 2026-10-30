@@ -1,0 +1,16 @@
+# Vertex Express API key 与 AI Studio key 是不同后端的凭据。
+# 在 dsh 凭据管理或容器环境中提供 GOOGLE_VERTEX_API_KEY。
+# Express 不要设置 project、location 或 keyFile。
+- id: dsh-google-native
+  config:
+    aiStudio:
+      enabled: false
+    vertex:
+      enabled: true
+      vertexAuth: api-key
+      apiKeyEnv: GOOGLE_VERTEX_API_KEY
+      nativeTools:
+        search: true
+      generationConfig:
+        thinkingConfig:
+          includeThoughts: true

@@ -1,0 +1,18 @@
+# 标准 Vertex。保留/合并既有插件条目，不要覆盖整个 profile。
+# 以下项目 ID 是占位值，keyFile 是容器内路径。
+# 已有 ADC 时可省略 keyFile，例如容器已提供 GOOGLE_APPLICATION_CREDENTIALS。
+- id: dsh-google-native
+  config:
+    aiStudio:
+      enabled: false
+    vertex:
+      enabled: true
+      vertexAuth: adc
+      project: your-google-cloud-project
+      location: global
+      keyFile: /home/node/google/service-account.json
+      nativeTools:
+        search: true
+      generationConfig:
+        thinkingConfig:
+          includeThoughts: true

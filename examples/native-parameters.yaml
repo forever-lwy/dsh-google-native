@@ -1,0 +1,42 @@
+# SDK 原生参数示例；按模型支持选择需要的配置，不要把所有示例参数盲目合并。
+# 使用前确认该模型仍对当前账号/地区可用。
+- id: dsh-google-native
+  config:
+    aiStudio:
+      enabled: true
+      apiKeyEnv: GOOGLE_API_KEY
+      generationConfig:
+        thinkingConfig:
+          includeThoughts: true
+        tools:
+          - googleSearch: {}
+          - urlContext: {}
+      models:
+        - id: gemini-3.8-flash
+          name: Gemini 3.8 Flash
+          reasoning:
+            - id: low
+              name: 低
+              thinkingLevel: LOW
+            - id: medium
+              name: 中
+              thinkingLevel: MEDIUM
+            - id: high
+              name: 高
+              thinkingLevel: HIGH
+          defaultReasoning: medium
+        - id: gemini-4-argon
+          name: Gemini 4 Argon
+          reasoning:
+            - id: low
+              name: 低
+              thinkingLevel: LOW
+            - id: medium
+              name: 中
+              thinkingLevel: MEDIUM
+            - id: high
+              name: 高
+              thinkingLevel: HIGH
+          defaultReasoning: medium
+    vertex:
+      enabled: false
