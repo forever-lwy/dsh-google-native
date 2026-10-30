@@ -3,6 +3,7 @@ import z from '@deepseek-ai/schemastery'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { GenerateContentConfig, ThinkingConfig } from '@google/genai'
+import type { GoogleModelCapabilities } from './capabilities.js'
 
 export const GOOGLE_PROVIDERS = ['google-ai-studio', 'google-vertex-native'] as const
 export type GoogleProvider = typeof GOOGLE_PROVIDERS[number]
@@ -24,6 +25,8 @@ export interface GoogleModelConfig {
   reasoning?: GoogleReasoningConfig[]
   defaultReasoning?: string
   generationConfig?: GenerateContentConfig
+  /** Exact support overrides for custom models; unknown IDs expose no chat options by default. */
+  capabilities?: GoogleModelCapabilities
 }
 
 export interface GoogleFileOptions {
@@ -75,6 +78,10 @@ const model = z.object({
   id: z.string().required(), name: z.string(), contextWindow: z.number().min(1), maxTokens: z.number().min(1),
   reasoning: z.array(reasoning), defaultReasoning: z.string(),
   generationConfig: z.dict(z.any()).description('Google GenerateContentConfig 原生 JSON 参数'),
+  capabilities: z.object({
+    nativeFiles: z.boolean(), search: z.boolean(), urlContext: z.boolean(), codeExecution: z.boolean(), maps: z.boolean(),
+    functionCallingWithNativeTools: z.boolean(),
+  }).description('此模型支持的原生聊天选项；未知模型须显式声明'),
 })
 
 const budgetEfforts: GoogleReasoningConfig[] = [

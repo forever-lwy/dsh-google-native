@@ -14,6 +14,11 @@ interface Active {
   data?: Uint8Array[]
 }
 
+const nativeToolLabels: Record<string, string> = {
+  GOOGLE_SEARCH_WEB: 'Google 搜索', GOOGLE_SEARCH_IMAGE: 'Google 图片搜索', URL_CONTEXT: 'URL 上下文',
+  GOOGLE_MAPS: 'Google 地图', FILE_SEARCH: '文件搜索', MEDIA_PROCESSING: '媒体处理',
+}
+
 /** Stream raw Parts, retaining signatures on their exact native Part for replay. */
 export async function* translateStream(
   stream: AsyncIterable<GenerateContentResponse>, options: GenerateOptions, attachments: AttachmentStore,
@@ -109,6 +114,8 @@ export async function* translateStream(
         yield* close()
         const text = part.executableCode ? `\n\`\`\`${part.executableCode.language?.toLowerCase() ?? ''}\n${part.executableCode.code ?? ''}\n\`\`\`\n`
           : part.codeExecutionResult ? `\n\`\`\`text\n${part.codeExecutionResult.output ?? ''}\n\`\`\`\n`
+            : part.toolCall ? `\n正在使用${nativeToolLabels[part.toolCall.toolType ?? ''] ?? '原生工具'}…\n`
+              : part.toolResponse ? `\n${nativeToolLabels[part.toolResponse.toolType ?? ''] ?? '原生工具'}已完成。\n`
             : part.fileData?.fileUri ? `[Google 原生媒体：${part.fileData.mimeType ?? 'file'}] ${part.fileData.fileUri}`
               : `[Google 原生数据]\n\`\`\`json\n${JSON.stringify(part)}\n\`\`\``
         const block: ContentBlock = { type: 'text', text }

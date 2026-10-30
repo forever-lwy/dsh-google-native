@@ -5,7 +5,7 @@ import {
   type GenerateOptions, type LlmModelInfo, type LlmResolvedModelInfo,
   type PreparedAdapterCall, type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
-import { GoogleGenAI, type GenerateContentConfig, type GoogleGenAIOptions, type ThinkingLevel, type Tool } from '@google/genai'
+import { GoogleGenAI, FunctionCallingConfigMode, type GenerateContentConfig, type GoogleGenAIOptions, type ThinkingLevel, type Tool } from '@google/genai'
 import { type GoogleProfile, type GoogleModelConfig, type Profiles } from './config.js'
 import { NativeFileStore } from './files.js'
 import { translateMessages } from './messages.js'
@@ -13,6 +13,8 @@ import { restoreNativeFiles } from './file-scope.js'
 import { googleError } from './errors.js'
 import { translateStream } from './stream.js'
 import { googleFetch } from './transport.js'
+import { activeNativeToolChoices, applyNativeToolChoices, resolveCapabilities, unsupportedChoices } from './capabilities.js'
+import { latestChatChoices } from './request-controls.js'
 
 export interface GoogleAdapterOptions {
   profiles: () => Profiles
@@ -112,10 +114,10 @@ export class GoogleNativeAdapter extends LlmAdapter {
     const options = restoreNativeFiles(projected)
     try {
       options.signal?.throwIfAborted()
-      const { client, files } = await this.connection(profile)
-      const messages = await translateMessages(options, files)
       const model = profile.models.find(item => item.id === options.model)
       const config = buildGenerationConfig(profile, model, options)
+      const { client, files } = await this.connection(profile)
+      const messages = await translateMessages(options, files)
       if (messages.systemInstruction) config.systemInstruction = messages.systemInstruction
       const stream = await client.models.generateContentStream({ model: options.model, contents: messages.contents, config })
       yield* translateStream(stream, options, this.ctx.attachments)
@@ -127,7 +129,7 @@ export class GoogleNativeAdapter extends LlmAdapter {
 export function buildGenerationConfig(profile: GoogleProfile, model: GoogleModelConfig | undefined, options: GenerateOptions): GenerateContentConfig {
   const base = structuredClone(profile.generationConfig)
   const override = structuredClone(model?.generationConfig ?? {})
-  const config: GenerateContentConfig = {
+  let config: GenerateContentConfig = {
     automaticContinuation: false, ...base, ...override,
     httpOptions: { ...base.httpOptions, ...override.httpOptions,
       headers: { ...base.httpOptions?.headers, ...override.httpOptions?.headers, ...attributionHeaders() },
@@ -167,9 +169,29 @@ export function buildGenerationConfig(profile: GoogleProfile, model: GoogleModel
     [native.codeExecution, 'codeExecution'], [native.maps, 'googleMaps']] as const) {
     if (enabled && !tools.some(tool => name in tool)) tools.push({ [name]: {} })
   }
-  if (options.tools?.length) tools.push({ functionDeclarations: options.tools.map(tool => ({
-    name: tool.name, description: tool.description, parametersJsonSchema: structuredClone(tool.parameters),
-  })) })
   if (tools.length) config.tools = tools
+  const choices = latestChatChoices(options)
+  const capabilities = resolveCapabilities(profile.provider, model)
+  if (choices) {
+    if (unsupportedChoices(capabilities, choices).length) throw new LlmError('该请求选择了当前模型不支持的原生能力。', 'UNSUPPORTED_NATIVE_CAPABILITY')
+    config = applyNativeToolChoices(config, choices)
+  }
+  const nativeEnabled = Object.values(activeNativeToolChoices(config)).some(Boolean)
+  // Older models and conservative connections use built-in tools independently.
+  // The composer explains this mode before the user enables a native tool.
+  if (options.tools?.length && (!nativeEnabled || capabilities.functionCallingWithNativeTools)) {
+    const functions = { functionDeclarations: options.tools.map(tool => ({
+      name: tool.name, description: tool.description, parametersJsonSchema: structuredClone(tool.parameters),
+    })) }
+    config.tools = [...config.tools ?? [], functions]
+    const extra = config.httpOptions?.extraBody
+    if (Array.isArray(extra?.tools)) config.httpOptions = { ...config.httpOptions, extraBody: { ...extra, tools: [...extra.tools, functions] } }
+    if (nativeEnabled && profile.provider === 'google-ai-studio') {
+      const mode = config.toolConfig?.functionCallingConfig?.mode
+      if (mode === FunctionCallingConfigMode.AUTO) throw new LlmError('Google 原生工具与本地工具混用需要 VALIDATED 函数模式。', 'UNSUPPORTED_PARAMETER')
+      config.toolConfig = { ...config.toolConfig, includeServerSideToolInvocations: true,
+        functionCallingConfig: { ...config.toolConfig?.functionCallingConfig, mode: mode ?? FunctionCallingConfigMode.VALIDATED } }
+    }
+  }
   return config
 }

@@ -1,0 +1,26 @@
+# 安装 bundle 后，将此条目的 config 合并进 profile 的 cordis.patch.yml。
+# models 数组会整体替换目录；请保留自己仍要使用的其他模型。
+- id: dsh-google-native
+  config:
+    aiStudio:
+      enabled: true
+      apiKeyEnv: GOOGLE_API_KEY
+      models:
+        # 已知模型的其他能力沿用内置表；这里只隐藏地图选项。
+        - id: gemini-3.8-flash
+          name: Gemini 3.8 Flash
+          capabilities:
+            maps: false
+        # 将下列 ID 替换为实际可用的自定义模型 ID。
+        # 自定义模型没有隐含能力；仅声明已经确认支持的项目。
+        - id: replace-with-your-model-id
+          name: 自定义 Google 模型
+          capabilities:
+            nativeFiles: true
+            search: true
+            urlContext: false
+            codeExecution: false
+            maps: false
+            functionCallingWithNativeTools: false
+    vertex:
+      enabled: false

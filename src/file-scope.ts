@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, RequestMessage, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { GOOGLE_PROVIDERS } from './config.js'
+import { usesNativeFiles } from './request-controls.js'
 
 const nativeFiles = new AsyncLocalStorage<GenerateOptions>()
 
@@ -48,6 +49,7 @@ export function restoreNativeFiles(options: GenerateOptions): GenerateOptions {
   const messages = options.messages.map((projected): RequestMessage => {
     const source = projected.id === undefined ? anonymous[anonymousIndex++] : byId.get(projected.id)
     if (source === undefined || !source.content.some(block => block.type === 'file')) return projected
+    if (!usesNativeFiles(source, original)) return projected
     if (projected.role !== source.role || projected.content.length !== source.content.length) {
       throw new LlmError('dsh 文件投影与原消息不匹配；无法安全发送 Google 原生附件', 'NATIVE_FILE_BRIDGE_MISMATCH')
     }

@@ -8,11 +8,13 @@ import { Config, GOOGLE_PROVIDERS, profilesOf } from './config.js'
 import { GoogleNativeAdapter } from './adapter.js'
 import { GoogleNativeService } from './service.js'
 import { registerNativeFileBridge } from './file-scope.js'
+import { registerGoogleChatControls } from './chat-controls.js'
 
 export { Config, DEFAULT_MODELS, defaultProfile, profilesOf, validateProfile } from './config.js'
 export type { GoogleFileOptions, GoogleModelConfig, GoogleNativeTools, GoogleProfile, GoogleProfileOptions, GoogleProvider, GoogleReasoningConfig, Profiles } from './config.js'
 export { GoogleNativeAdapter } from './adapter.js'
 export { GoogleNativeService } from './service.js'
+export type { GoogleModelCapabilities } from './capabilities.js'
 
 export const name = 'dsh-google-native'
 export const inject = ['llm', 'attachments']
@@ -54,6 +56,9 @@ export function apply(ctx: Context, config: Config): void {
   ])
   registerNativeFileBridge(ctx)
   new GoogleNativeService(ctx, adapter)
+  ctx.inject(['sessionProjections', 'sessionController', 'sessions', 'typert'], chatCtx => {
+    registerGoogleChatControls(chatCtx, profiles)
+  })
   ctx.on('loader/volatile-update', () => {
     // rc.5 has no llm/models-updated event. Its registry replacement emits the
     // supported adapters-updated notification while preserving this adapter.

@@ -1,6 +1,8 @@
 # Google 原生供应商插件
 
-`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。发布版本 `0.1.0` 针对 dsh `0.2.1-rc.5`，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
+`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。待安装版本 `0.1.1` 针对 dsh `0.2.1-rc.5`，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
+
+`0.1.1` 增加聊天输入框中的“原生能力”菜单，位于文件上传按钮旁。可以选择新上传文件的原生输入方式，以及当前模型支持的 Google 搜索、URL 上下文、代码执行和 Google 地图。
 
 ## 能力范围
 
@@ -27,7 +29,7 @@ npm pack --pack-destination ../releases
 在 dsh 的“插件 → 添加插件”中输入下面的**容器路径**，由用户确认安装和启用：
 
 ```text
-/plugins/releases/dsh-google-native-0.1.0.tgz
+/plugins/releases/dsh-google-native-0.1.1.tgz
 ```
 
 不要使用 `link:` 将源码连接到日常 `web` profile。下一次测试应提升版本并生成新文件名。现有 HMR 可以应用用户主动安装的版本；只有界面明确提示 `restart-required` 才需要安排重启。dsh `0.2.1-rc.5` 普通“已安装”页面没有第三方插件通用更新按钮，不能将较新上游界面的行为视为已具备。
@@ -48,12 +50,30 @@ dsh `0.2.1-rc.5` 的内置供应商连接编辑器只识别内置插件，不能
 | [Vertex ADC](examples/vertex-adc.yaml) | project/location 加 ADC 或服务账号文件 |
 | [Vertex Express](examples/vertex-express.yaml) | `GOOGLE_VERTEX_API_KEY`；不设置 project/location/keyFile |
 | [原生参数与思考档位](examples/native-parameters.yaml) | 模型目录、thinkingLevel、搜索和 URL Context |
+| [聊天能力声明](examples/chat-capabilities.yaml) | 为自定义模型声明可显示的原生选项，或隐藏个别选项 |
 
 AI Studio 使用 API key；标准 Vertex 使用 project/location 和 Application Default Credentials（ADC）或服务账号，Vertex Express 使用其专用 API key。`apiKeyEnv` 字段保存凭据引用名，不填真实 key。未配置某个后端时可设其 `enabled: false`。服务账号使用 `keyFile`；省略时由 Google SDK 读取 ADC。
 
 密钥应通过 dsh 凭据管理或运行容器的环境变量提供。服务账号文件路径必须是**容器可读路径**；例如宿主机 `data/google/service-account.json` 在现有持久挂载下对应 `/home/node/google/service-account.json`。路径示例不表示已创建该文件或配置凭据。不要将密钥、服务账号 JSON、部署 `.env` 或 dsh 数据加入插件仓库或版本包。
 
 Docker 进程只能读取传入容器的环境变量。宿主机 shell 中 `export` 的变量不会自动出现在已经运行的容器中。使用现有挂载中的服务账号文件或界面凭据时，不必为了开发插件修改部署。
+
+### 聊天中的原生能力选项
+
+安装并启用 `0.1.1` 后，选择本插件的 Google 供应商和支持的模型，文件上传按钮旁会出现“原生能力”。切换到其他供应商或未声明这些能力的模型时，菜单立即隐藏；同一菜单中也只显示当前模型支持的选项。
+
+- **新上传文件使用模型原生能力**：打开时，新发送的 PDF、音频、视频等附件以 Google 原生文件输入发送；关闭时，按 dsh 通常的文件路径方式交给模型及本地工具处理。此前已经发送的附件保留当时记录的方式，不会因修改开关而重新上传或改为另一种输入。
+- **Google 搜索、URL 上下文、代码执行、Google 地图**：按需启用 Google 在服务端执行的工具。开关关闭时会移除该工具，即使供应商、模型参数或 `httpOptions.extraBody.tools` 中配置过它。
+
+这些选项按**会话、供应商与模型**分别保存。刷新页面会读取已保存的选择；切换回原模型会恢复该模型的设置。发送消息时会记录选项快照，所以排队消息、后续工具调用和会话回放使用对应消息的选择，不会被之后的开关修改。保存选项时暂时禁止发送，收到服务端确认后才恢复；正在回复或已有提交尚未完成时，选项不可修改。
+
+原生文件输入默认打开，延续 `0.1.0` 的行为。各原生工具初次使用时遵循供应商及模型的已有配置，不会默认全部启用。选择会覆盖对应工具的静态配置；其他原生生成参数继续生效。
+
+内置模型采用经过核对的能力表。对自定义模型 ID，默认不显示原生选项；在 `models[].capabilities` 明确声明后才显示相应选项。声明包括 `nativeFiles`、`search`、`urlContext`、`codeExecution`、`maps`，并可用 `false` 隐藏某一项。参考[聊天能力示例](examples/chat-capabilities.yaml)。这些声明不提高 Google 模型本身的能力、权限或配额。
+
+`functionCallingWithNativeTools` 表示该连接是否支持在一次请求中同时使用上述原生工具和 dsh 本地函数工具，它本身不是聊天复选框。未声明支持混用的连接在启用原生工具时，会省略同一请求的本地函数声明，并在菜单中提示。AI Studio 的已核对新模型可按能力表混用；Vertex 和其他模型采用保守默认值。需要覆盖时，应先确认具体模型及连接支持该组合。
+
+聊天菜单只处理文件输入与这些常用原生工具。Live 实时音视频等独立 API 仍通过下文的原生 SDK 服务使用。
 
 ### 思考
 

@@ -42,7 +42,7 @@ test('official SDK wire preserves native search, structured output, thinking, he
   assert.deepEqual(request.body.generationConfig.responseJsonSchema, { type: 'object' })
   assert.equal(request.body.generationConfig.seed, 7)
   assert.ok(request.body.tools.some(tool => tool.googleSearch))
-  assert.ok(request.body.tools.some(tool => tool.functionDeclarations?.[0].name === 'lookup'))
+  assert.ok(!request.body.tools.some(tool => tool.functionDeclarations?.[0].name === 'lookup'), '2.5 native tools use independent mode')
   assert.ok(request.signal)
 })
 
