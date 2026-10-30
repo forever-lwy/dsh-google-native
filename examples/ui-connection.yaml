@@ -1,0 +1,26 @@
+# 常用连接设置可直接在：插件 → 已安装 → dsh-google-native → 详情 / 配置 中编辑。
+# 此文件仅说明对应的配置字段；不要用它覆盖整个 profile。
+# API Key 在界面的“新的 API Key”中输入，配置中只保存 apiKeyEnv 引用名称。
+# gateway.example 是格式占位地址，需要替换为提供 Google 原生协议的上游。
+- id: dsh-google-native
+  config:
+    aiStudio:
+      enabled: true
+      apiKeyEnv: GOOGLE_API_KEY
+      # 可带路径前缀；末尾的 /v1beta 会被识别，不会重复拼接。
+      baseURL: https://gateway.example/google/v1beta
+      # 明确填写时优先于 Base URL 中的版本后缀。
+      apiVersion: v1beta
+      models:
+        - id: gemini-3.8-flash
+          name: Gemini 3.8 Flash
+    vertex:
+      enabled: false
+      vertexAuth: adc
+      project: your-google-cloud-project
+      location: global
+      # 省略 keyFile 使用 SDK 的 ADC；填写时必须是容器内可读的绝对路径。
+      # keyFile: /home/node/google/service-account.json
+      # Vertex 自定义上游同样必须提供原生 Vertex 路由。
+      # baseURL: https://gateway.example/vertex
+      # apiVersion: v1beta1

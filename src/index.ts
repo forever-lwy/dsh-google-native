@@ -1,7 +1,4 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { assertUsableApiKey } from '@deepseek-ai/dsh-llm'
-import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import { Config, GOOGLE_PROVIDERS, profilesOf } from './config.js'
@@ -9,6 +6,9 @@ import { GoogleNativeAdapter } from './adapter.js'
 import { GoogleNativeService } from './service.js'
 import { registerNativeFileBridge } from './file-scope.js'
 import { registerGoogleChatControls } from './chat-controls.js'
+import { createNativeGoogleClient, resolveGoogleApiKey } from './client-factory.js'
+import { registerGoogleProviderSettings } from './provider-settings.js'
+import { discoverGoogleModels } from './discovery.js'
 
 export { Config, DEFAULT_MODELS, defaultProfile, profilesOf, validateProfile } from './config.js'
 export type { GoogleFileOptions, GoogleModelConfig, GoogleNativeTools, GoogleProfile, GoogleProfileOptions, GoogleProvider, GoogleReasoningConfig, Profiles } from './config.js'
@@ -24,19 +24,7 @@ export function apply(ctx: Context, config: Config): void {
   profiles()
   const adapter = new GoogleNativeAdapter(ctx, {
     profiles,
-    resolveApiKey: async profile => {
-      const credentialProvider = ctx.get('credentials')
-      const references = profile.provider === 'google-ai-studio' && profile.apiKeyEnv === 'GOOGLE_API_KEY'
-        ? ['GOOGLE_API_KEY', 'GEMINI_API_KEY'] : [profile.apiKeyEnv]
-      for (const reference of references) {
-        const ref = credentialRef(reference)
-        const resolved = credentialProvider === undefined
-          ? launchEnvironmentOf(ctx).get(ref)
-          : await credentialProvider.resolve(ref)
-        if (resolved !== undefined && resolved.value.length > 0) return assertUsableApiKey(resolved.value, name, ref)
-      }
-      return undefined
-    },
+    resolveApiKey: profile => resolveGoogleApiKey(ctx, profile),
   })
   // Both routes stay owned by this generation, including while disabled;
   // disabling removes catalog entries and refuses dispatch in the adapter.
@@ -56,6 +44,14 @@ export function apply(ctx: Context, config: Config): void {
   ])
   registerNativeFileBridge(ctx)
   new GoogleNativeService(ctx, adapter)
+  const settingsNs = ctx.fiber.entry?.options.id ?? name
+  ctx.inject(['settings', 'typert', 'credentials'], settingsCtx => {
+    registerGoogleProviderSettings(settingsCtx, {
+      settingsNs, profiles,
+      discover: (profile, key, signal) => discoverGoogleModels(createNativeGoogleClient(profile, key),
+        profile.provider === 'google-ai-studio' ? 'ai-studio' : 'vertex', signal),
+    })
+  })
   ctx.inject(['sessionProjections', 'sessionController', 'sessions', 'typert'], chatCtx => {
     registerGoogleChatControls(chatCtx, profiles)
   })

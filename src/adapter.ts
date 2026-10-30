@@ -12,7 +12,7 @@ import { translateMessages } from './messages.js'
 import { restoreNativeFiles } from './file-scope.js'
 import { googleError } from './errors.js'
 import { translateStream } from './stream.js'
-import { googleFetch } from './transport.js'
+import { createNativeGoogleClient } from './client-factory.js'
 import { activeNativeToolChoices, applyNativeToolChoices, resolveCapabilities, unsupportedChoices } from './capabilities.js'
 import { latestChatChoices } from './request-controls.js'
 
@@ -69,7 +69,11 @@ export class GoogleNativeAdapter extends LlmAdapter {
   async prepareCall(provider: string, model: string, signal?: AbortSignal): Promise<PreparedAdapterCall> {
     signal?.throwIfAborted()
     const profile = this.profile(provider)
-    return { model: this.modelInfo(profile, model), stream: options => this.streamProfile(profile, options) }
+    // Capture endpoint and authentication together before returning a prepared
+    // generation; a later UI key update must not reach its previous endpoint.
+    const connection = await this.connection(profile)
+    signal?.throwIfAborted()
+    return { model: this.modelInfo(profile, model), stream: options => this.streamProfile(profile, options, connection) }
   }
 
   /** All public methods of the pinned official SDK remain available to trusted host plugins. */
@@ -84,21 +88,7 @@ export class GoogleNativeAdapter extends LlmAdapter {
     const identity = createHash('sha256').update(JSON.stringify([profile, apiKey])).digest('hex')
     const existing = this.connections.get(identity)
     if (existing) return existing
-    if (vertex && !needsKey && !profile.project) throw new LlmError('Vertex ADC 需要配置 Google Cloud project。', 'INVALID_CONFIG')
-    const clientOptions: GoogleGenAIOptions = {
-      vertexai: vertex, apiVersion: profile.apiVersion,
-      ...(needsKey ? { apiKey } : {
-        project: profile.project, location: profile.location || 'global',
-        ...(profile.keyFile ? { googleAuthOptions: { keyFile: profile.keyFile } } : {}),
-      }),
-      httpOptions: {
-        ...(profile.baseURL ? { baseUrl: profile.baseURL } : {}),
-        headers: attributionHeaders(), retryOptions: { attempts: 1 },
-        // Attribution survives per-request custom headers, including native SDK calls.
-        fetch: googleFetch,
-      },
-    }
-    const client = (this.options.createClient ?? (options => new GoogleGenAI(options)))(clientOptions)
+    const client = createNativeGoogleClient(profile, apiKey, this.options.createClient)
     const connection = { client, files: new NativeFileStore(client, vertex ? 'vertex' : 'ai-studio', this.ctx.attachments, profile.files) }
     // Bound stale generations without invalidating any in-flight connection.
     if (this.connections.size >= 16) this.connections.delete(this.connections.keys().next().value!)
@@ -110,13 +100,13 @@ export class GoogleNativeAdapter extends LlmAdapter {
     return this.streamProfile(this.profile(options.provider), options)
   }
 
-  private async *streamProfile(profile: GoogleProfile, projected: GenerateOptions): AsyncGenerator<StreamChunk> {
+  private async *streamProfile(profile: GoogleProfile, projected: GenerateOptions, boundConnection?: Connection): AsyncGenerator<StreamChunk> {
     const options = restoreNativeFiles(projected)
     try {
       options.signal?.throwIfAborted()
       const model = profile.models.find(item => item.id === options.model)
       const config = buildGenerationConfig(profile, model, options)
-      const { client, files } = await this.connection(profile)
+      const { client, files } = boundConnection ?? await this.connection(profile)
       const messages = await translateMessages(options, files)
       if (messages.systemInstruction) config.systemInstruction = messages.systemInstruction
       const stream = await client.models.generateContentStream({ model: options.model, contents: messages.contents, config })

@@ -4,6 +4,7 @@ import { LlmError } from '@deepseek-ai/dsh-llm'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { GenerateContentConfig, ThinkingConfig } from '@google/genai'
 import type { GoogleModelCapabilities } from './capabilities.js'
+import { normalizeNativeEndpoint } from './client-factory.js'
 
 export const GOOGLE_PROVIDERS = ['google-ai-studio', 'google-vertex-native'] as const
 export type GoogleProvider = typeof GOOGLE_PROVIDERS[number]
@@ -157,12 +158,7 @@ export function profilesOf(config: Config): Profiles {
 export function validateProfile(provider: GoogleProvider, input: VolatileSnapshot<GoogleProfileOptions>): GoogleProfile {
   const profile = structuredClone({ ...input, provider }) as GoogleProfile
   credentialRef(profile.apiKeyEnv)
-  if (profile.baseURL) {
-    const parsed = new URL(profile.baseURL)
-    if (!['https:', 'http:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
-      throw new LlmError('Google baseURL 必须是无凭据、无查询参数的 HTTP(S) URL', 'INVALID_CONFIG')
-    }
-  }
+  normalizeNativeEndpoint(profile.baseURL, profile.apiVersion)
   if (profile.keyFile && !profile.keyFile.startsWith('/')) throw new LlmError('Google keyFile 必须是容器内绝对路径', 'INVALID_CONFIG')
   const ids = new Set<string>()
   for (const entry of profile.models) {

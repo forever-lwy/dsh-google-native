@@ -1,8 +1,8 @@
 # Google 原生供应商插件
 
-`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。待安装版本 `0.1.1` 针对 dsh `0.2.1-rc.5`，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
+`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。待安装版本 `0.1.2` 针对 dsh `0.2.1-rc.5`，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
 
-`0.1.1` 增加聊天输入框中的“原生能力”菜单，位于文件上传按钮旁。可以选择新上传文件的原生输入方式，以及当前模型支持的 Google 搜索、URL 上下文、代码执行和 Google 地图。
+`0.1.2` 增加插件详情中的供应商设置界面，可直接修改 Base URL、认证与凭据，并获取上游模型列表后勾选加入。聊天输入框继续提供“原生能力”菜单，位于文件上传按钮旁，可选择新上传文件的原生输入方式，以及当前模型支持的 Google 搜索、URL 上下文、代码执行和 Google 地图。
 
 ## 能力范围
 
@@ -29,7 +29,7 @@ npm pack --pack-destination ../releases
 在 dsh 的“插件 → 添加插件”中输入下面的**容器路径**，由用户确认安装和启用：
 
 ```text
-/plugins/releases/dsh-google-native-0.1.1.tgz
+/plugins/releases/dsh-google-native-0.1.2.tgz
 ```
 
 不要使用 `link:` 将源码连接到日常 `web` profile。下一次测试应提升版本并生成新文件名。现有 HMR 可以应用用户主动安装的版本；只有界面明确提示 `restart-required` 才需要安排重启。dsh `0.2.1-rc.5` 普通“已安装”页面没有第三方插件通用更新按钮，不能将较新上游界面的行为视为已具备。
@@ -38,9 +38,9 @@ Git 来源发布需要固定完整 commit SHA，市场记录也应引用该 SHA�
 
 ## 配置
 
-插件注册两个供应商路由：`google-ai-studio`、`google-vertex-native`。两套配置分别位于 `aiStudio` 和 `vertex`，可同时启用。默认模型目录包含 Gemini 2.5 Flash / Pro、Gemini 3.8 Flash 和 Gemini 4 Argon；该目录是配置候选，不是针对当前账号或地区的可用性探测。可在 `models` 添加账号可用的原生模型 ID，并为自定义模型显式声明思考选项。安装后在模型界面选择对应供应商和模型。
+插件注册两个供应商路由：`google-ai-studio`、`google-vertex-native`。两套配置分别位于 `aiStudio` 和 `vertex`，可同时启用。默认模型目录包含 Gemini 2.5 Flash / Pro、Gemini 3.8 Flash 和 Gemini 4 Argon；该目录是配置候选，不是针对当前账号或地区的可用性探测。可在插件设置界面获取上游模型并选择要加入的项目，也可手动填写模型 ID。保存后，在聊天模型选择器选择对应供应商和模型。
 
-dsh `0.2.1-rc.5` 的内置供应商连接编辑器只识别内置插件，不能在本插件的供应商卡片中保存 Google 连接配置，也没有自动渲染全部参数的通用设置表单。请使用原生配置编辑器，或按下列示例编辑 profile 配置。安装的 bundle 创建 ID 为 `dsh-google-native` 的插件条目；示例以 `- id: dsh-google-native` 覆盖该条目的配置，可合并到相应 profile 的 `cordis.patch.yml`，不要覆盖整个文件。不要将示例改成仅有 `name` 的新条目。插件本身不修改日常部署配置。
+dsh `0.2.1-rc.5` 的内置 Models 连接编辑器仍只识别内置插件。本插件在 **插件 → 已安装 → dsh-google-native → 详情 / 配置** 提供自己的设置界面，Google 连接和模型目录可在这里直接保存。高级生成参数、思考档位和自定义能力声明仍可使用原生配置编辑器或下列 YAML 示例。安装的 bundle 创建 ID 为 `dsh-google-native` 的插件条目；示例以 `- id: dsh-google-native` 覆盖该条目的配置，可合并到相应 profile 的 `cordis.patch.yml`，不要覆盖整个文件，也不要改成仅有 `name` 的新条目。
 
 配置后，模型选择器可以选择本插件公布的模型。当前宿主的 Models 页可能将未使用 API key 的 Vertex ADC 显示为缺少凭据；该就绪提示不阻止模型选择或实际调用。
 
@@ -49,18 +49,48 @@ dsh `0.2.1-rc.5` 的内置供应商连接编辑器只识别内置插件，不能
 | [AI Studio](examples/ai-studio.yaml) | `GOOGLE_API_KEY` 凭据引用，启用原生搜索 |
 | [Vertex ADC](examples/vertex-adc.yaml) | project/location 加 ADC 或服务账号文件 |
 | [Vertex Express](examples/vertex-express.yaml) | `GOOGLE_VERTEX_API_KEY`；不设置 project/location/keyFile |
+| [自定义连接地址](examples/ui-connection.yaml) | Base URL、API 版本和两种后端的配置字段；常用连接设置也可直接在 UI 编辑 |
 | [原生参数与思考档位](examples/native-parameters.yaml) | 模型目录、thinkingLevel、搜索和 URL Context |
 | [聊天能力声明](examples/chat-capabilities.yaml) | 为自定义模型声明可显示的原生选项，或隐藏个别选项 |
 
-AI Studio 使用 API key；标准 Vertex 使用 project/location 和 Application Default Credentials（ADC）或服务账号，Vertex Express 使用其专用 API key。`apiKeyEnv` 字段保存凭据引用名，不填真实 key。未配置某个后端时可设其 `enabled: false`。服务账号使用 `keyFile`；省略时由 Google SDK 读取 ADC。
+AI Studio 使用 API key；标准 Vertex 使用 project/location 和 Application Default Credentials（ADC）或服务账号，Vertex Express 使用其专用 API key。`apiKeyEnv` 字段保存凭据引用名，不填真实 key；UI 的“新的 API Key”输入框负责写入凭据存储。未配置某个后端时可关闭“启用此供应商”。服务账号使用 `keyFile`；省略时由 Google SDK 读取 ADC。
 
 密钥应通过 dsh 凭据管理或运行容器的环境变量提供。服务账号文件路径必须是**容器可读路径**；例如宿主机 `data/google/service-account.json` 在现有持久挂载下对应 `/home/node/google/service-account.json`。路径示例不表示已创建该文件或配置凭据。不要将密钥、服务账号 JSON、部署 `.env` 或 dsh 数据加入插件仓库或版本包。
 
 Docker 进程只能读取传入容器的环境变量。宿主机 shell 中 `export` 的变量不会自动出现在已经运行的容器中。使用现有挂载中的服务账号文件或界面凭据时，不必为了开发插件修改部署。
 
+### 在 UI 配置连接和模型
+
+打开插件详情的配置页面后，按下面的流程操作：
+
+1. 选择 **AI Studio** 或 **Vertex AI**。两套连接分别保存；Vertex 可以选择 ADC 或 Express API Key。ADC 填写项目、区域，以及可选的容器内服务账号文件路径。
+2. 填写 **Base URL** 和可选的 **API 版本**。Base URL 留空使用 Google 官方地址。API Key 模式可以填写已有的凭据引用，或在“新的 API Key”中输入新密钥；该输入框不会回显已保存的密钥，留空表示保留现有凭据。
+3. 点击 **获取上游模型**。请求使用当前页面尚未保存的连接地址、认证方式和新输入的密钥；它只读取模型元数据，不保存连接、不自动加入模型，也不进行模型生成。
+4. 筛选模型后勾选要加入聊天选择器的项目，可使用“全选当前结果”或“取消当前结果”。如果上游未提供原生列表、权限不足或列表为空，可在下方手动添加模型 ID。
+5. 点击 **保存供应商设置**，才会更新当前供应商连接和模型目录。只保留选中的模型；未勾选项目会在保存时从该目录移除。已加入模型的思考配置、能力声明及其他高级参数会保留；新增的内置已知模型采用对应预设。
+
+获取上游列表不会抹掉已经选择或保存、但未被本次列表返回的模型。切换 AI Studio / Vertex 标签会保留各自未保存的草稿；只有保存才会应用当前标签的修改。关闭页面前请完成需要保留的保存操作。
+
+API Key 由 dsh 凭据存储保存，插件配置只记录引用名称。UI 仅显示是否已配置，不读取密钥明文。凭据存储不可写时，可以使用已有引用或 ADC；若保存结果提示“连接与模型已保存，但 API Key 保存失败”，需要重新读取配置并再次输入、保存密钥。
+
+### Base URL 的格式
+
+Base URL 应指向 **Google 原生 Gemini / Vertex API**，不能使用仅提供 OpenAI Chat Completions 协议的地址。地址可以带网关路径前缀，也可带 `v1beta`、`v1` 等版本后缀；插件会分离这个后缀，避免重复拼接版本路径。明确填写的“API 版本”优先于地址中的后缀。
+
+| Base URL | API 版本 | AI Studio 模型列表请求示例 |
+| --- | --- | --- |
+| 留空 | 留空 | Google 官方默认模型列表 |
+| `https://gateway.example/google` | `v1beta` | `https://gateway.example/google/v1beta/models` |
+| `https://gateway.example/google/v1beta` | 留空 | `https://gateway.example/google/v1beta/models` |
+| `https://gateway.example/google/v1beta` | `v1` | `https://gateway.example/google/v1/models` |
+
+上述地址是格式示例，不是已配置的服务。Vertex 使用对应的原生 publisher 模型列表和生成路径；Base URL、API 版本与认证配置同时用于模型发现和实际聊天请求。不要把完整的 `:generateContent`、`:streamGenerateContent` 操作地址填作 Base URL。
+
+模型列表反映上游返回的目录，不保证每个模型都已对当前账号、区域或计费项目开放。AI Studio 返回动作元数据时，列表会排除只支持嵌入或实时 API 的模型；Vertex 及部分网关不返回这些字段，插件保留能力未知的候选供选择，不推断上下文、输出上限或原生工具支持。模型目录过大、分页异常或读取超时会明确结束获取，可以改用手动 ID。模型是否支持某项原生聊天功能，仍由精确能力声明和实际 API 决定。
+
 ### 聊天中的原生能力选项
 
-安装并启用 `0.1.1` 后，选择本插件的 Google 供应商和支持的模型，文件上传按钮旁会出现“原生能力”。切换到其他供应商或未声明这些能力的模型时，菜单立即隐藏；同一菜单中也只显示当前模型支持的选项。
+安装并启用本版本后，选择本插件的 Google 供应商和支持的模型，文件上传按钮旁会出现“原生能力”。切换到其他供应商或未声明这些能力的模型时，菜单立即隐藏；同一菜单中也只显示当前模型支持的选项。
 
 - **新上传文件使用模型原生能力**：打开时，新发送的 PDF、音频、视频等附件以 Google 原生文件输入发送；关闭时，按 dsh 通常的文件路径方式交给模型及本地工具处理。此前已经发送的附件保留当时记录的方式，不会因修改开关而重新上传或改为另一种输入。
 - **Google 搜索、URL 上下文、代码执行、Google 地图**：按需启用 Google 在服务端执行的工具。开关关闭时会移除该工具，即使供应商、模型参数或 `httpOptions.extraBody.tools` 中配置过它。
@@ -170,6 +200,7 @@ export function apply(ctx: Context) {
 ## 官方参考
 
 - [Google Gen AI JavaScript SDK](https://github.com/googleapis/js-genai)
+- [Gemini 模型列表与动作元数据](https://ai.google.dev/api/models)
 - [GenerateContent 思考配置](https://ai.google.dev/gemini-api/docs/generate-content/thinking)
 - [Gemini 3.8 Flash 模型](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash)
 - [Gemini 4 Argon 模型](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon)

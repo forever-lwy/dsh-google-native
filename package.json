@@ -1,6 +1,6 @@
 {
   "name": "dsh-google-native",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Native Google Gemini AI Studio and Vertex AI provider for DeepSeek Harness",
   "type": "module",
   "main": "lib/index.js",
@@ -61,6 +61,7 @@
     "@deepseek-ai/dsh-client-store": "0.2.1-rc.5",
     "@deepseek-ai/dsh-client-ui-conversation": "0.2.1-rc.5",
     "@deepseek-ai/dsh-client-ui-model-selection": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "0.2.1-rc.5",
     "@deepseek-ai/dsh-client-ui-renderer": "0.2.1-rc.5",
     "@deepseek-ai/dsh-client-ui-session": "0.2.1-rc.5",
     "@deepseek-ai/dsh-client-ui-slots": "0.2.1-rc.5",
@@ -87,7 +88,8 @@
         "@deepseek-ai/dsh-client-ui-model-selection",
         "@deepseek-ai/dsh-client-ui-session",
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-api-remote-access"
+        "@deepseek-ai/dsh-api-remote-access",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
       ]
     }
   }
