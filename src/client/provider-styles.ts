@@ -1,4 +1,12 @@
+// rc.5 has no provider-editor override slot: its built-in editor only handles
+// llm-deepseek and llm-pi-ai. Keep our working configuration entry and suppress
+// the host's unusable Edit action/YAML fallback only on these two native cards.
+// These CSS-module classes belong to the pinned host version; recheck on upgrade.
+const nativeProviderCard = ':is(li.zGbnIq_rowCard,li.zGbnIq_setupCard):has(>[data-slot="settings.models.provider-card"]>.dsh-google-provider-card[data-google-provider-card="google-ai-studio"],>[data-slot="settings.models.provider-card"]>.dsh-google-provider-card[data-google-provider-card="google-vertex-native"])'
+
 export const providerStyles = `
+${nativeProviderCard}>.zGbnIq_rowHead>.zGbnIq_rowActions>button:first-child,
+${nativeProviderCard}>.zGbnIq_editor{display:none}
 .dsh-google-provider-settings{font-size:14px;line-height:1.5;color:var(--dsw-alias-label-primary,#202126)}
 .dsh-google-provider-card{margin-top:12px;font-size:14px;color:var(--dsw-alias-label-primary,#202126)}
 .dsh-google-provider-card-panel{padding-top:18px}
