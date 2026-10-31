@@ -63,9 +63,10 @@ test('standard Vertex keeps OAuth/project routing while using the configured pre
   assert.equal(wire.headers.get('x-goog-api-key'), null)
 })
 
-test('a prepared chat keeps its original endpoint and key after the settings UI changes both', async () => {
+test('a prepared chat keeps its original endpoint, key and timeout after the settings UI changes them', async () => {
   const profile = defaultProfile('google-ai-studio')
   profile.baseURL = 'https://old.example/google'
+  profile.generationConfig.httpOptions = { timeout: 600000 }
   const profiles = { 'google-ai-studio': profile, 'google-vertex-native': defaultProfile('google-vertex-native') }
   let key = 'old-key'
   const connected = []
@@ -73,17 +74,19 @@ test('a prepared chat keeps its original endpoint and key after the settings UI 
   const adapter = new GoogleNativeAdapter({ attachments: {} }, { profiles: () => profiles, resolveApiKey: async () => key,
     createClient: options => {
       connected.push(options)
-      return { models: { async generateContentStream() {
-        dispatched.push({ endpoint: options.httpOptions.baseUrl, key: options.apiKey })
+      return { models: { async generateContentStream(request) {
+        dispatched.push({ endpoint: options.httpOptions.baseUrl, key: options.apiKey, timeout: request.config.httpOptions.timeout })
         return (async function* () { yield { candidates: [{ content: { parts: [{ text: 'OK' }] }, finishReason: 'STOP' }] } })()
       } } }
     } })
   const prepared = await adapter.prepareCall('google-ai-studio', 'gemini-3.8-flash')
   profile.baseURL = 'https://new.example/google'
+  profile.generationConfig.httpOptions.timeout = 1200000
   key = 'new-key'
   const request = { provider: 'google-ai-studio', model: 'gemini-3.8-flash', messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }] }
   await Array.fromAsync(prepared.stream(request))
   await Array.fromAsync(adapter.stream(request))
   assert.equal(connected.length, 2)
-  assert.deepEqual(dispatched, [{ endpoint: 'https://old.example/google', key: 'old-key' }, { endpoint: 'https://new.example/google', key: 'new-key' }])
+  assert.deepEqual(dispatched, [{ endpoint: 'https://old.example/google', key: 'old-key', timeout: 600000 },
+    { endpoint: 'https://new.example/google', key: 'new-key', timeout: 1200000 }])
 })

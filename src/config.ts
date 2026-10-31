@@ -173,9 +173,17 @@ export function validateProfile(provider: GoogleProvider, input: VolatileSnapsho
     }
     if (entry.defaultReasoning !== undefined && !efforts.has(entry.defaultReasoning)) throw new LlmError('defaultReasoning 必须属于该模型的 reasoning 列表', 'INVALID_CONFIG')
     validateThinking(entry.generationConfig?.thinkingConfig)
+    validateHttpTimeout(entry.generationConfig?.httpOptions?.timeout)
   }
   validateThinking(profile.generationConfig.thinkingConfig)
+  validateHttpTimeout(profile.generationConfig.httpOptions?.timeout)
   return profile
+}
+
+function validateHttpTimeout(timeout: number | undefined): void {
+  if (timeout !== undefined && (!Number.isInteger(timeout) || timeout < 0 || timeout > 2_147_483_647)) {
+    throw new LlmError('Google HTTP timeout 必须是 0 到 2147483647 之间的整数毫秒；0 表示不设置本地请求截止时间', 'INVALID_CONFIG')
+  }
 }
 
 function validateThinking(thinking: ThinkingConfig | undefined): void {

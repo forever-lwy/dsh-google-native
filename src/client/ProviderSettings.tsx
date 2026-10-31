@@ -3,9 +3,10 @@ import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots
 import type {} from '@deepseek-ai/dsh-api-remote-access/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-models/client'
 import type {} from './provider-locales.js'
-import type {
-  GoogleProviderConnection, GoogleProviderModel, GoogleProviderProfileView, GoogleProviderSettings,
-  GoogleProviderDiscoverRequest, GoogleProviderSaveRequest,
+import {
+  MAX_REQUEST_TIMEOUT_MS,
+  type GoogleProviderConnection, type GoogleProviderModel, type GoogleProviderProfileView, type GoogleProviderSettings,
+  type GoogleProviderDiscoverRequest, type GoogleProviderSaveRequest,
 } from '../provider-remote.js'
 
 export type ProviderConnection = GoogleProviderConnection
@@ -25,6 +26,8 @@ interface Draft {
   filter: string
   manual: string
   discovered: boolean
+  timeoutSeconds: string
+  timeoutBadInput: boolean
 }
 type Props = PropsRuntime<'settings.models.provider-card'> & PropsLocale<'googleProviderSettings'> & ProviderSettingsFace
 type FormProps = Pick<Props, 'read' | 'discover' | 'save' | 'useRemoteAccess' | 't'> & {
@@ -33,7 +36,16 @@ type FormProps = Pick<Props, 'read' | 'discover' | 'save' | 'useRemoteAccess' | 
 
 function initialDraft(profile: ProviderProfile): Draft {
   return { connection: { ...profile.connection }, models: profile.models.map(model => ({ ...model })),
-    selected: profile.models.map(model => model.id), apiKey: '', filter: '', manual: '', discovered: false }
+    selected: profile.models.map(model => model.id), apiKey: '', filter: '', manual: '', discovered: false,
+    timeoutSeconds: String((profile.connection.requestTimeoutMs ?? 0) / 1000), timeoutBadInput: false }
+}
+
+/** Decimal seconds preserve existing millisecond precision without floating-point rounding. */
+function requestTimeoutMs(seconds: string): number | undefined {
+  const match = /^(\d+)(?:\.(\d{1,3}))?$/.exec(seconds.trim())
+  if (!match) return undefined
+  const milliseconds = Number(match[1]) * 1000 + Number((match[2] ?? '').padEnd(3, '0'))
+  return Number.isSafeInteger(milliseconds) && milliseconds >= 0 && milliseconds <= MAX_REQUEST_TIMEOUT_MS ? milliseconds : undefined
 }
 
 function selectedModels(draft: Draft): ProviderModel[] {
@@ -99,7 +111,10 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
   const filter = draft?.filter.trim().toLocaleLowerCase() ?? ''
   const visible = draft?.models.filter(model => [model.id, model.name ?? '', model.description ?? ''].join(' ').toLocaleLowerCase().includes(filter)) ?? []
   const selected = new Set(draft?.selected ?? [])
+  const timeoutMs = draft ? requestTimeoutMs(draft.timeoutSeconds) : undefined
+  const validTimeout = timeoutMs !== undefined && draft?.timeoutBadInput === false
   const dirty = draft !== undefined && profile !== undefined && (draft.apiKey.trim().length > 0
+    || !validTimeout || timeoutMs !== (profile.connection.requestTimeoutMs ?? 0)
     || JSON.stringify(draft.connection) !== JSON.stringify(profile.connection)
     || JSON.stringify([...draft.selected].sort()) !== JSON.stringify(profile.models.map(model => model.id).sort()))
 
@@ -113,14 +128,14 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
   }))
 
   const fetchModels = async () => {
-    if (!draft || busy || !canDiscover) return
+    if (!draft || busy || !canDiscover || !validTimeout) return
     const current = ++generation.current
     const target = provider
     const controller = new AbortController()
     operation.current = controller
     setStatus('discovering')
     try {
-      const value = await discover({ provider: target, connection: { ...draft.connection }, ...(draft.apiKey.trim() ? { apiKey: draft.apiKey.trim() } : {}) }, controller.signal)
+      const value = await discover({ provider: target, connection: { ...draft.connection, requestTimeoutMs: timeoutMs }, ...(draft.apiKey.trim() ? { apiKey: draft.apiKey.trim() } : {}) }, controller.signal)
       if (controller.signal.aborted || current !== generation.current) return
       setDrafts(previous => {
         const old = previous[target]
@@ -136,14 +151,14 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
   }
 
   const saveSettings = async () => {
-    if (!draft || !snapshot || !editable || !dirty) return
+    if (!draft || !snapshot || !editable || !dirty || !validTimeout) return
     const current = ++generation.current
     const target = provider
     const controller = new AbortController()
     operation.current = controller
     setStatus('saving')
     try {
-      const value = await save({ provider: target, connection: { ...draft.connection }, models: selectedModels(draft),
+      const value = await save({ provider: target, connection: { ...draft.connection, requestTimeoutMs: timeoutMs }, models: selectedModels(draft),
         ...(draft.apiKey.trim() ? { apiKey: draft.apiKey.trim() } : {}), expectedRevision: snapshot.revision }, controller.signal)
       if (controller.signal.aborted || current !== generation.current) return
       setSnapshot(value)
@@ -192,6 +207,17 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
       <div className="dsh-google-provider-grid">
         {field('baseURL', 'baseURL', 'baseURLHint', true)}
         {field('apiVersion', 'apiVersion', 'apiVersionHint')}
+        <label className="dsh-google-provider-field"><span>{t('requestTimeout')}</span>
+          <input type="number" value={draft.timeoutSeconds} disabled={!editable} min="0" max={MAX_REQUEST_TIMEOUT_MS / 1000} step="0.001"
+            aria-invalid={!validTimeout} aria-describedby={`${baseId}-timeout-hint${validTimeout ? '' : ` ${baseId}-timeout-error`}`}
+            data-google-setting="requestTimeoutSeconds" onChange={event => {
+              const timeoutSeconds = event.currentTarget.value
+              const timeoutBadInput = event.currentTarget.validity.badInput
+              patchDraft(old => ({ ...old, timeoutSeconds, timeoutBadInput }))
+            }}/>
+          <span id={`${baseId}-timeout-hint`} className="dsh-google-provider-hint">{t('requestTimeoutHint')}</span>
+          {!validTimeout && <span id={`${baseId}-timeout-error`} role="alert" className="dsh-google-provider-hint dsh-google-provider-error">{t('requestTimeoutError')}</span>}
+        </label>
         {provider === 'google-vertex-native' && <label className="dsh-google-provider-field"><span>{t('auth')}</span>
           <select value={draft.connection.vertexAuth} disabled={!editable} onChange={event => connection('vertexAuth', event.currentTarget.value as 'adc' | 'api-key')} data-google-setting="vertexAuth">
             <option value="adc">{t('adc')}</option><option value="api-key">{t('express')}</option>
@@ -210,7 +236,7 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
           </label>
         </>}
       </div>
-      <div className="dsh-google-provider-discover"><button type="button" className="dsh-google-provider-button" disabled={busy || !canDiscover} onClick={() => { void fetchModels() }}>
+      <div className="dsh-google-provider-discover"><button type="button" className="dsh-google-provider-button" disabled={busy || !canDiscover || !validTimeout} onClick={() => { void fetchModels() }}>
         {status === 'discovering' ? t('discovering') : t('discover')}
       </button><span className="dsh-google-provider-hint">{t('discoverHint')}</span></div>
       {status === 'discover-error' && <p role="alert" className="dsh-google-provider-status dsh-google-provider-error">{t('discoverError')}</p>}
@@ -248,7 +274,7 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
         <p className="dsh-google-provider-hint">{t('modelsHint')}</p>
       </section>
       <div className="dsh-google-provider-footer">
-        <button type="button" className="dsh-google-provider-button dsh-google-provider-primary" disabled={!editable || !dirty} onClick={() => { void saveSettings() }}>{status === 'saving' ? t('saving') : t('save')}</button>
+        <button type="button" className="dsh-google-provider-button dsh-google-provider-primary" disabled={!editable || !dirty || !validTimeout} onClick={() => { void saveSettings() }}>{status === 'saving' ? t('saving') : t('save')}</button>
         {dirty && <span className="dsh-google-provider-hint">{t('unsaved')}</span>}
         {(status === 'save-error' || status === 'credential-error' || status === 'conflict-error') && <button type="button" className="dsh-google-provider-button" onClick={() => setReload(value => value + 1)}>{t('retry')}</button>}
       </div>

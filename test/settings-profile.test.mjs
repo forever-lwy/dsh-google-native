@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import test from 'node:test'
 import { realSettingsProfile } from './helpers/real-settings-profile.mjs'
+import { profilesOf } from '../lib/config.js'
+import { buildGenerationConfig } from '../lib/adapter.js'
 
 const signal = () => new AbortController().signal
 
@@ -41,4 +43,37 @@ test('real profile settings read, persist and apply provider changes without rem
   const catalog = await ctx.llm.listModels('google-ai-studio')
   assert.ok(catalog.some(model => model.provider === 'google-ai-studio' && model.id === 'gemini-3.8-flash'))
   assert.ok(!catalog.some(model => model.provider === 'google-ai-studio' && model.id === 'gemini-2.5-flash'))
+})
+
+test('real profile persists SDK deadlines from provider cards and retains per-model timeout precedence', async t => {
+  const { ctx, dir } = await realSettingsProfile(t, { config: {
+    aiStudio: { generationConfig: { temperature: 0.2 },
+      models: [{ id: 'custom-timeout', generationConfig: { topP: 0.4, httpOptions: { timeout: 1200 } } }] },
+    vertex: { generationConfig: { httpOptions: { timeout: 240000, headers: { custom: 'retain' } } } },
+  } })
+  const entry = ctx.configEditor.entries().find(item => item.options.id === 'dsh-google-native')
+  const fiber = entry.fiber
+  let snapshot = await ctx.nativeGoogleSettings.get({}, signal())
+  for (const [provider, timeout] of [['google-ai-studio', 600000], ['google-vertex-native', 0]]) {
+    const before = snapshot.profiles.find(profile => profile.provider === provider)
+    snapshot = await ctx.nativeGoogleSettings.save({ provider,
+      connection: { ...before.connection, requestTimeoutMs: timeout }, models: before.models,
+      expectedRevision: snapshot.revision,
+    }, signal())
+    assert.equal(snapshot.profiles.find(profile => profile.provider === provider).connection.requestTimeoutMs, timeout)
+  }
+  assert.equal(entry.fiber, fiber)
+  const profiles = profilesOf(fiber.config)
+  assert.equal(profiles['google-ai-studio'].generationConfig.httpOptions.timeout, 600000)
+  assert.equal(profiles['google-ai-studio'].generationConfig.temperature, 0.2)
+  assert.equal(profiles['google-vertex-native'].generationConfig.httpOptions.timeout, 0)
+  assert.deepEqual(profiles['google-vertex-native'].generationConfig.httpOptions.headers, { custom: 'retain' })
+  const model = profiles['google-ai-studio'].models[0]
+  const request = { provider: 'google-ai-studio', model: model.id, messages: [] }
+  assert.equal(buildGenerationConfig(profiles['google-ai-studio'], model, request).httpOptions.timeout, 1200,
+    'existing advanced model settings keep precedence over the provider default')
+  assert.equal(buildGenerationConfig(profiles['google-ai-studio'], undefined, request).httpOptions.timeout, 600000)
+  const stored = await readFile(join(dir, 'cordis.patch.yml'), 'utf8')
+  assert.match(stored, /timeout: 600000/)
+  assert.match(stored, /timeout: 0/)
 })

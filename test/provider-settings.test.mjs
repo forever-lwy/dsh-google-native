@@ -5,7 +5,7 @@ import { SettingsConflictError } from '@deepseek-ai/dsh-settings'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import { TypertGatewayService } from '@deepseek-ai/dsh-api-gateway'
 import { LlmError } from '@deepseek-ai/dsh-llm'
-import { defaultProfile } from '../lib/config.js'
+import { defaultProfile, validateProfile } from '../lib/config.js'
 import { registerGoogleProviderSettings } from '../lib/provider-settings.js'
 import { providerRemoteInfo, ProviderSettingsRemoteError, saveProviderSettings } from '../lib/provider-remote.js'
 import { chatRemoteInfo } from '../lib/chat-remote.js'
@@ -39,8 +39,9 @@ function fixture() {
       for (const op of ops) {
         assert.equal(op.op, 'set')
         const target = op.path[0] === 'aiStudio' ? profiles[studio] : profiles[vertex]
-        assert.equal(op.path.length, 2)
-        target[op.path[1]] = structuredClone(op.value)
+        let parent = target
+        for (const key of op.path.slice(1, -1)) parent = parent[key] ??= {}
+        parent[op.path.at(-1)] = structuredClone(op.value)
       }
       revision++
     },
@@ -221,4 +222,72 @@ test('save helper exposes only safe conflict or partial-save recovery metadata',
     assert.equal(JSON.stringify(error).includes('never-copy-this-secret'),false)
     return true
   })
+})
+
+test('provider timeouts read and save the existing SDK option without changing advanced fields or the other provider', async () => {
+  const f = fixture()
+  f.profiles[studio].generationConfig = {
+    temperature: 0.23,
+    httpOptions: { timeout: 1850, headers: { authorization: 'never-return-this-header' }, extraBody: { custom: true } },
+  }
+  f.profiles[studio].models[0].generationConfig = { httpOptions: { timeout: 4500 }, topP: 0.4 }
+  const advanced = structuredClone(f.profiles[studio].generationConfig)
+  const model = structuredClone(f.profiles[studio].models[0])
+  const vertexBefore = structuredClone(f.profiles[vertex])
+  const before = await f.service.get({}, signal())
+  assert.equal(before.profiles[0].connection.requestTimeoutMs, 1850)
+  assert.equal(before.profiles[1].connection.requestTimeoutMs, undefined)
+  assert.doesNotMatch(JSON.stringify(before), /never-return-this-header|custom|4500/)
+  const saved = await f.service.save({ provider: studio,
+    connection: { ...before.profiles[0].connection, requestTimeoutMs: 600000 },
+    models: before.profiles[0].models, expectedRevision: before.revision,
+  }, signal())
+  assert.equal(saved.profiles[0].connection.requestTimeoutMs, 600000)
+  assert.deepEqual(f.profiles[studio].generationConfig, { ...advanced, httpOptions: { ...advanced.httpOptions, timeout: 600000 } })
+  assert.deepEqual(f.profiles[studio].models[0], model)
+  assert.deepEqual(f.profiles[vertex], vertexBefore)
+  assert.deepEqual(f.operations[0].find(op => op.path.at(-1) === 'timeout'), {
+    op: 'set', path: ['aiStudio', 'generationConfig', 'httpOptions', 'timeout'], value: 600000,
+  })
+})
+
+test('zero disables a provider deadline, while omitted fields from older clients preserve existing timeouts', async () => {
+  const f = fixture()
+  f.profiles[studio].generationConfig.httpOptions = { timeout: 300000, headers: { custom: 'keep' } }
+  await f.service.save({ provider: studio, connection: f.connection(studio), models, expectedRevision: 4 }, signal())
+  assert.equal(f.profiles[studio].generationConfig.httpOptions.timeout, 300000)
+  assert.equal(f.operations[0].some(op => op.path.at(-1) === 'timeout'), false)
+  const saved = await f.service.save({ provider: studio,
+    connection: { ...f.connection(studio), requestTimeoutMs: 0 }, models, expectedRevision: 5 }, signal())
+  assert.equal(saved.profiles[0].connection.requestTimeoutMs, 0)
+  assert.deepEqual(f.profiles[studio].generationConfig.httpOptions, { timeout: 0, headers: { custom: 'keep' } })
+})
+
+test('timeout input rejects invalid or overflowing timers before discovery, settings writes or credential writes', async () => {
+  const f = fixture()
+  for (const value of [-1, 0.5, NaN, Infinity, 2147483648, null, '600000']) {
+    const request = { provider: studio, connection: { ...f.connection(studio), requestTimeoutMs: value }, apiKey: 'transient-only-key' }
+    await assert.rejects(f.service.discover(request, signal()), error => error.code === 'gateway/bad-request')
+    await assert.rejects(f.service.save({ ...request, models, expectedRevision: 4 }, signal()), error => error.code === 'gateway/bad-request')
+  }
+  assert.equal(f.discovered.length, 0)
+  assert.equal(f.operations.length, 0)
+  assert.equal(f.writes.length, 0)
+})
+
+test('advanced profile and per-model SDK timeouts are validated against Node timer limits', () => {
+  for (const provider of [studio, vertex]) for (const scope of ['profile', 'model']) {
+    for (const value of [-1, 0.1, NaN, Infinity, 2147483648, null, '600000']) {
+      const profile = defaultProfile(provider)
+      const target = scope === 'profile' ? profile : profile.models[0]
+      target.generationConfig = { httpOptions: { timeout: value } }
+      assert.throws(() => validateProfile(provider, profile), error => error.code === 'INVALID_CONFIG')
+    }
+    for (const value of [0, 1, 2147483647]) {
+      const profile = defaultProfile(provider)
+      const target = scope === 'profile' ? profile : profile.models[0]
+      target.generationConfig = { httpOptions: { timeout: value } }
+      assert.equal(validateProfile(provider, profile).provider, provider)
+    }
+  }
 })

@@ -11,6 +11,10 @@
       baseURL: https://gateway.example/google/v1beta
       # 明确填写时优先于 Base URL 中的版本后缀。
       apiVersion: v1beta
+      # 模型页以秒显示；这里的 SDK 参数使用毫秒。0 表示不额外设置本地总时限。
+      generationConfig:
+        httpOptions:
+          timeout: 600000
       models:
         - id: gemini-3.8-flash
           name: Gemini 3.8 Flash

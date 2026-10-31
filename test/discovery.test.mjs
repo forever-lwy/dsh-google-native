@@ -141,9 +141,12 @@ test('invalid resource paths and non-finite limits are never promoted to catalog
 
 test('upstream catalog errors retain safe classifications without reflecting provider bodies or credentials', async t => {
   const secret = 'provider-body-offline-secret'
-  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ error: { message: secret } }), { status: 404, headers: { 'content-type': 'application/json' } }))
+  let status = 404
+  // Use one mock registration so cleanup restores the real process-wide fetch
+  // when this suite shares a realm with subsequent real-network tests.
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ error: { message: secret } }), { status, headers: { 'content-type': 'application/json' } }))
   await assert.rejects(discoverGoogleModels(client(), 'ai-studio'), error => error.code === 'MODEL_DISCOVERY_UNAVAILABLE' && !error.message.includes(secret))
-  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ error: { message: secret } }), { status: 403, headers: { 'content-type': 'application/json' } }))
+  status = 403
   await assert.rejects(discoverGoogleModels(client(), 'ai-studio'), error => error.code === 'AUTH' && !error.message.includes(secret))
 })
 

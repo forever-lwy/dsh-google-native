@@ -4,12 +4,16 @@ import type { RemoteResult, TypertClientRemote, TypertRemoteInfo, TypertRemoteMe
 
 export const providerIdSchema = z.enum(['google-ai-studio', 'google-vertex-native'])
 const optionalText = z.string().trim().max(2048).optional()
+/** Largest delay Node's timers can represent without clamping to one millisecond. */
+export const MAX_REQUEST_TIMEOUT_MS = 2_147_483_647
 export const providerConnectionSchema = z.object({
   enabled: z.boolean(),
   apiKeyEnv: z.string().min(1).max(256).regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
   vertexAuth: z.enum(['adc', 'api-key']),
   project: optionalText, location: optionalText, keyFile: optionalText,
   baseURL: optionalText, apiVersion: z.string().trim().max(64).optional(),
+  /** Model-generation deadline; omitted by older clients, zero disables it. */
+  requestTimeoutMs: z.number().int().nonnegative().max(MAX_REQUEST_TIMEOUT_MS).optional(),
 }).strict()
 export type GoogleProviderConnection = z.infer<typeof providerConnectionSchema>
 

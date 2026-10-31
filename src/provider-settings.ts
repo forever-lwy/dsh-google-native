@@ -35,6 +35,7 @@ function parseRequest<T>(schema: z.ZodType<T>, value: unknown): T {
 function viewConnection(profile: GoogleProfile): GoogleProviderConnection {
   const connection: GoogleProviderConnection = { enabled: profile.enabled, apiKeyEnv: profile.apiKeyEnv, vertexAuth: profile.vertexAuth }
   for (const key of optionalConnectionKeys) if (profile[key]) connection[key] = profile[key]
+  if (profile.generationConfig.httpOptions?.timeout !== undefined) connection.requestTimeoutMs = profile.generationConfig.httpOptions.timeout
   return connection
 }
 
@@ -123,7 +124,11 @@ export class GoogleProviderSettingsService extends TypertRemoteService {
   private draft(provider: GoogleProfile['provider'], connection: GoogleProviderConnection, models?: GoogleProviderModel[]): GoogleProfile {
     try {
       const current = this.options.profiles()[provider]
-      const draft = { ...structuredClone(current), ...connection }
+      const { requestTimeoutMs, ...connectionValues } = connection
+      const draft = { ...structuredClone(current), ...connectionValues }
+      if (requestTimeoutMs !== undefined) draft.generationConfig = { ...draft.generationConfig,
+        httpOptions: { ...draft.generationConfig.httpOptions, timeout: requestTimeoutMs },
+      }
       for (const key of optionalConnectionKeys) if (!connection[key]) delete draft[key]
       if (models) draft.models = selectedModels(current, models)
       return validateProfile(provider, draft)
@@ -202,6 +207,11 @@ export class GoogleProviderSettingsService extends TypertRemoteService {
       value: draft[key] ?? '',
     }))
     ops.push({ op: 'set', path: [base, 'models'], value: draft.models })
+    // Patch only the deadline, preserving private headers and every other
+    // advanced option. Older clients omit this field and leave it untouched.
+    if (request.connection.requestTimeoutMs !== undefined) ops.push({ op: 'set',
+      path: [base, 'generationConfig', 'httpOptions', 'timeout'], value: request.connection.requestTimeoutMs,
+    })
     signal.throwIfAborted()
     try { await this.ctx.settings.mutate(this.options.settingsNs, ops, request.expectedRevision) }
     catch (error) {
