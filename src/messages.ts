@@ -3,6 +3,8 @@ import type { ContentBlock, GenerateOptions, RequestMessage } from '@deepseek-ai
 import type { Content, Part, FunctionResponsePart } from '@google/genai'
 import { assertNativeInputType, type NativeFileStore } from './files.js'
 import type { GoogleInputType } from './config.js'
+import { isVerifiedNativeFileResult } from './file-scope.js'
+import { NATIVE_FILE_TOOL } from './native-file-provenance.js'
 
 interface ReplayBlock { parts: Part[]; block?: ContentBlock }
 interface NativeReplay {
@@ -104,6 +106,8 @@ export async function translateMessages(options: GenerateOptions, files: NativeF
       if (!identity) throw new LlmError('Tool result has no matching function call in Google conversation history.', 'INVALID_TOOL_RESULT')
       const text: string[] = []
       const media: FunctionResponsePart[] = []
+      const nativeFiles = identity.name === NATIVE_FILE_TOOL && isVerifiedNativeFileResult(message, options)
+      const attached: Part[] = []
       for (const block of message.content) {
         if (block.type === 'text' || block.type === 'reasoning') text.push(block.text)
         else if (block.type === 'image') {
@@ -112,17 +116,23 @@ export async function translateMessages(options: GenerateOptions, files: NativeF
           else text.push(`[Image ${block.attachment.name ?? block.attachment.attachmentId} was offloaded.]`)
         } else if (block.type === 'file') {
           const part = await files.filePart(block.attachment, options.signal, inputTypes)
-          if (part.inlineData) media.push({ inlineData: part.inlineData })
-          if (part.fileData) media.push({ fileData: part.fileData })
+          if (nativeFiles) attached.push(part)
+          else {
+            if (part.inlineData) media.push({ inlineData: part.inlineData })
+            if (part.fileData) media.push({ fileData: part.fileData })
+          }
         } else throw new LlmError(`Unsupported tool result content type: ${block.type}.`, 'UNSUPPORTED_CONTENT')
       }
       const functionResponse = {
         name: identity.name,
         ...(identity.nativeId === undefined ? {} : { id: identity.nativeId }),
-        response: { [message.isError ? 'error' : 'output']: text.join('\n') },
+        response: { [message.isError ? 'error' : 'output']: text.join('\n')
+          || (nativeFiles ? 'The original file is attached as native user media in this conversation.' : '') },
         ...(media.length === 0 ? {} : { parts: media }),
       }
-      appendContent(contents, 'user', [{ functionResponse }])
+      // Gemini 2.5 accepts ordinary user media; multimodal function responses
+      // are restricted to newer models. Keep the call result paired first.
+      appendContent(contents, 'user', [{ functionResponse }, ...attached])
       continue
     }
     const parts: Part[] = []

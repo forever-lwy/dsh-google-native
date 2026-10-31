@@ -9,12 +9,15 @@ import { registerGoogleChatControls } from './chat-controls.js'
 import { createNativeGoogleClient, resolveGoogleApiKey } from './client-factory.js'
 import { registerGoogleProviderSettings } from './provider-settings.js'
 import { discoverGoogleModels } from './discovery.js'
+import { registerNativeFileTool } from './native-file-tool.js'
 
 export { Config, DEFAULT_MODELS, defaultProfile, profilesOf, validateProfile } from './config.js'
 export type { GoogleFileOptions, GoogleModelConfig, GoogleNativeTools, GoogleProfile, GoogleProfileOptions, GoogleProvider, GoogleReasoningConfig, Profiles } from './config.js'
 export { GoogleNativeAdapter } from './adapter.js'
 export { GoogleNativeService } from './service.js'
 export type { GoogleModelCapabilities } from './capabilities.js'
+export { GOOGLE_NATIVE_FILE_TOOL } from './native-file-tool.js'
+export type { NativeFileToolReceipt } from './native-file-tool.js'
 
 export const name = 'dsh-google-native'
 export const inject = ['llm', 'attachments']
@@ -43,6 +46,9 @@ export function apply(ctx: Context, config: Config): void {
     },
   ])
   registerNativeFileBridge(ctx)
+  ctx.inject(['tools', 'fs', 'workingDirectory', 'systemPrompt', 'sessionQuery'], toolCtx => {
+    registerNativeFileTool(toolCtx, profiles)
+  })
   new GoogleNativeService(ctx, adapter)
   const settingsNs = ctx.fiber.entry?.options.id ?? name
   ctx.inject(['settings', 'typert', 'credentials'], settingsCtx => {

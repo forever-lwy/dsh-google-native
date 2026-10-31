@@ -1,8 +1,8 @@
 # Google 原生供应商插件
 
-`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。待安装版本 `0.1.6` 针对 dsh `0.2.1-rc.5`，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
+`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。待安装版本 `0.1.7` 针对 dsh `0.2.1-rc.5`，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
 
-`0.1.6` 在获取上游模型时，将明确返回的上下文长度、最大输出 tokens 和支持的输入/输出类型带入逐模型高级设置；缺失或无效的元数据保留手动配置。已保存的值及当前手动编辑的字段优先。入口为 **设置 → 模型 → 对应 Google 提供商 → 配置 Google 提供商**，支持的输出类型与实际请求的原生输出类型分别配置。功能只作用于本插件的 AI Studio、Vertex 两套后端。已有思考、超时、文件和原生工具设置继续保留。
+`0.1.7` 新增模型可调用的 `google_native_attach_file` 工具：将工作区文件的原始字节加入当前会话，由同一个 Google 主模型在下一次请求中直接读取。支持普通函数调用和 PTC `run_code`，不使用解析器或额外模型。模型页的元数据自动填写、逐模型高级设置，以及聊天中的原生工具选项继续保留。
 
 ## 能力范围
 
@@ -29,7 +29,7 @@ npm pack --pack-destination ../releases
 在 dsh 的“插件 → 添加插件”中输入下面的**容器路径**，由用户确认安装和启用：
 
 ```text
-/plugins/releases/dsh-google-native-0.1.6.tgz
+/plugins/releases/dsh-google-native-0.1.7.tgz
 ```
 
 不要使用 `link:` 将源码连接到日常 `web` profile。下一次测试应提升版本并生成新文件名。现有 HMR 可以应用用户主动安装的版本；只有界面明确提示 `restart-required` 才需要安排重启。dsh `0.2.1-rc.5` 普通“已安装”页面没有第三方插件通用更新按钮，不能将较新上游界面的行为视为已具备。
@@ -158,6 +158,22 @@ Base URL 应指向 **Google 原生 Gemini / Vertex API**，不能使用仅提供
 `functionCallingWithNativeTools` 表示该连接是否支持在一次请求中同时使用上述原生工具和 dsh 本地函数工具，它本身不是聊天复选框。未声明支持混用的连接在启用原生工具时，会省略同一请求的本地函数声明，并在菜单中提示。AI Studio 的已核对新模型可按能力表混用；Vertex 和其他模型采用保守默认值。需要覆盖时，应先确认具体模型及连接支持该组合。
 
 聊天菜单只处理文件输入与这些常用原生工具。Live 实时音视频等独立 API 仍通过下文的原生 SDK 服务使用。
+
+### 让模型自己读取工作区原生文件
+
+本插件提供 `google_native_attach_file`，参数为 `{ "path": "reports/example.pdf" }`。支持原生文件输入的本插件 Google 模型会看到这个工具；明确声明支持图片输入的模型也可用它读取截图。切换到其他供应商或未声明支持的模型时，工具会从模型可见的声明和 PTC SDK 中移除，直接猜测工具名也不能读取文件。
+
+可以这样要求模型：
+
+> 用 google_native_attach_file 将 reports/example.pdf 加入当前会话，然后由你直接读取文件并回答问题。
+
+工具通过 dsh 文件系统读取原始字节，保存为不可变附件。普通函数调用会在工具完成后把附件作为原生用户媒体传给同一主模型；PTC 模式下，可以在 `run_code` 中调用 `tools.google_native_attach_file({path: ...})`，外层程序成功完成后，原始附件会进入同一会话的下一步上下文。PDF、图片、音频、视频等均走原有 Google 原生 `inlineData` / `fileData` 通道。图片保留原始文件字节，不调用图片归一化；工具不会进行 OCR、转录、视频拆帧、文档解析、摘要或额外模型调用。
+
+相对路径以当前会话工作目录解析，文件必须位于会话原始工作区内；没有原始目录时使用当前工作目录。目录、特殊文件、外部 URL 以及指向工作区外的符号链接均不能上传。文件在读取时改变、超出本后端文件大小限制，或模型未声明对应输入类型时，工具会报告错误。一次调用附加一个完整文件；需要拆分时，应先生成格式有效的独立文件，再分别附加。
+
+此工具是模型明确选择的原生附件操作，独立于“新上传文件使用模型原生能力”这个用户上传开关。现有用户附件仍保持原来的处理方式。文件与产生它的会话、供应商、模型和工具调用绑定，并保存来源记录；切换到其他模型后需要重新调用。取消、工具失败、策略阻止，以及策略移除最终附件的情况均不会把该文件作为原生输入发送。PTC 外层失败或取消也不会发布待附加文件。
+
+上传限制沿用供应商 `files` 配置和逐模型输入类型。标准 Vertex 的本地附件默认最高 16 MiB，AI Studio 大文件仍由下一次请求中的 Files API 上传；工具成功表示本地原始附件已准备好，实际 Google 上传或模型请求仍可能失败。工具需要正常挂载 dsh 的 tools、fs、workingDirectory、systemPrompt 和 sessionQuery 服务，遵循现有工具执行策略。原生搜索等工具与本地函数工具不能混用的模型，仍受前述 Google 工具组合限制。
 
 ### 思考
 

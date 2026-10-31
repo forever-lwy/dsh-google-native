@@ -4,8 +4,11 @@ import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, RequestMessage, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { GOOGLE_PROVIDERS } from './config.js'
 import { usesNativeFiles } from './request-controls.js'
+import type {} from '@deepseek-ai/dsh-session-query'
+import { explicitNativeFileMessages, verifiedNativeFileMessages } from './native-file-provenance.js'
 
-const nativeFiles = new AsyncLocalStorage<GenerateOptions>()
+interface FileContext { options: GenerateOptions; explicit: Set<string>; authorized: Set<string> }
+const nativeFiles = new AsyncLocalStorage<FileContext>()
 
 /**
  * rc.5 projects FileBlocks to text inside its adapter boundary. Retain only
@@ -17,31 +20,47 @@ export function registerNativeFileBridge(ctx: Context): void {
     // A nested request without files must still shadow an outer request's
     // scope, including when it uses the same provider/model and message IDs.
     if (!GOOGLE_PROVIDERS.some(provider => provider === options.provider)) return next()
-    return withNativeFileContext(options, next)
+    return (async function* () {
+      const explicit = explicitNativeFileMessages(options)
+      let authorized = new Set<string>()
+      const query = ctx.get('sessionQuery')
+      if (explicit.size && options.sessionId !== undefined && options.purpose === undefined && query !== undefined) {
+        const observation = await query.observeSession(options.sessionId, { signal: options.signal, projectionMode: 'none' })
+        try {
+          options.signal?.throwIfAborted()
+          if (observation.header.id === options.sessionId) authorized = verifiedNativeFileMessages(options, observation.events)
+        }
+        finally { observation[Symbol.dispose]() }
+      }
+      yield* withNativeFileContext(options, next, authorized)
+    })()
   })
 }
 
 export async function* withNativeFileContext(
   options: GenerateOptions,
   next: () => AsyncIterable<StreamChunk>,
+  authorized = new Set<string>(),
 ): AsyncIterable<StreamChunk> {
-  const iterator = nativeFiles.run(options, () => next()[Symbol.asyncIterator]())
+  const context: FileContext = { options, explicit: explicitNativeFileMessages(options), authorized }
+  const iterator = nativeFiles.run(context, () => next()[Symbol.asyncIterator]())
   let done = false
   try {
     while (true) {
-      const item = await nativeFiles.run(options, () => iterator.next())
+      const item = await nativeFiles.run(context, () => iterator.next())
       if (item.done) { done = true; return }
       yield item.value
     }
   } finally {
-    if (!done && iterator.return !== undefined) await nativeFiles.run(options, () => iterator.return!())
+    if (!done && iterator.return !== undefined) await nativeFiles.run(context, () => iterator.return!())
   }
 }
 
 /** Restore files alone; all core-produced message/source changes are retained. */
 export function restoreNativeFiles(options: GenerateOptions): GenerateOptions {
-  const original = nativeFiles.getStore()
-  if (original === undefined || original.provider !== options.provider || original.model !== options.model) return options
+  const context = nativeFiles.getStore()
+  const original = context?.options
+  if (original === undefined || original.provider !== options.provider || original.model !== options.model || original.sessionId !== options.sessionId) return options
   const byId = new Map(original.messages.filter(message => message.id !== undefined).map(message => [message.id, message]))
   const anonymous = original.messages.filter(message => message.id === undefined)
   let anonymousIndex = 0
@@ -49,8 +68,11 @@ export function restoreNativeFiles(options: GenerateOptions): GenerateOptions {
   const messages = options.messages.map((projected): RequestMessage => {
     const source = projected.id === undefined ? anonymous[anonymousIndex++] : byId.get(projected.id)
     if (source === undefined || !source.content.some(block => block.type === 'file')) return projected
-    if (!usesNativeFiles(source, original)) return projected
-    if (projected.role !== source.role || projected.content.length !== source.content.length) {
+    const explicit = source.id !== undefined && context!.explicit.has(source.id)
+    if (explicit ? !context!.authorized.has(source.id!) : !usesNativeFiles(source, original)) return projected
+    const changedCall = explicit && source.role === 'tool' && projected.role === 'tool'
+      && (projected.toolCallId !== source.toolCallId || projected.source.callId !== source.source.callId)
+    if (projected.role !== source.role || projected.content.length !== source.content.length || changedCall) {
       throw new LlmError('dsh 文件投影与原消息不匹配；无法安全发送 Google 原生附件', 'NATIVE_FILE_BRIDGE_MISMATCH')
     }
     changed = true
@@ -60,4 +82,11 @@ export function restoreNativeFiles(options: GenerateOptions): GenerateOptions {
     } as RequestMessage
   })
   return changed ? { ...options, messages } : options
+}
+
+/** Used only while serializing the same verified request in its async scope. */
+export function isVerifiedNativeFileResult(message: RequestMessage, options: GenerateOptions): boolean {
+  const context = nativeFiles.getStore()
+  return context !== undefined && message.id !== undefined && context.authorized.has(message.id)
+    && context.options.provider === options.provider && context.options.model === options.model && context.options.sessionId === options.sessionId
 }
