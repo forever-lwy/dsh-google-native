@@ -248,6 +248,201 @@ describe('provider connection and model-selection settings in an actual DOM', ()
     assert.equal('advanced' in f.saves[0].request.models.find(model => model.id === 'gemini-3.8-flash'), false)
   })
 
+  test('upstream limits and supported types autofill a new model and persist without requesting every output modality', async t => {
+    const id = 'proxy/catalog-model'
+    const f = await mount(t, { discover: async () => ({ models: [{ id, name: 'Catalog Model', contextWindow: 262144, maxTokens: 16384,
+      inputTypes: ['text', 'image', 'pdf'], outputTypes: ['text', 'image'] }] }) })
+    await f.click(f.button('discover'))
+    await f.click(f.modelExpand(id))
+    assert.equal(f.modelField(id, 'contextWindow').value, '262144')
+    assert.equal(f.modelField(id, 'maxTokens').value, '16384')
+    assert.equal(f.modelField(id, 'inputMode').value, 'custom')
+    assert.equal(f.modelPanel(id).querySelector('[data-google-model-input=image]').checked, true)
+    assert.equal(f.modelPanel(id).querySelector('[data-google-model-input=audio]').checked, false)
+    assert.equal(f.modelPanel(id).querySelector('[data-google-model-input=pdf]').checked, true)
+    assert.equal(f.modelField(id, 'supportedOutputMode').value, 'custom')
+    assert.equal(f.modelPanel(id).querySelector('[data-google-model-supported-output=image]').checked, true)
+    assert.equal(f.modelPanel(id).querySelector('[data-google-model-supported-output=audio]').checked, false)
+    assert.equal(f.modelField(id, 'outputMode').value, 'inherit', 'supported types do not become requested response modalities')
+    await f.click(f.model(id))
+    await f.click(f.button('save'))
+    const selected = f.saves[0].request.models.find(model => model.id === id)
+    assert.equal(selected.contextWindow, 262144)
+    assert.equal(selected.maxTokens, 16384)
+    assert.deepEqual(selected.inputTypes, ['text', 'image', 'pdf'])
+    assert.deepEqual(selected.outputTypes, ['text', 'image'])
+    assert.deepEqual(selected.advanced, { inputTypes: ['text', 'image', 'pdf'], outputTypes: ['text', 'image'] })
+    assert.equal('responseModalities' in selected.advanced, false)
+  })
+
+  test('missing upstream metadata remains editable and manually declared support is saved independently of output requests', async t => {
+    const id = 'proxy/no-metadata'
+    const f = await mount(t, { discover: async () => ({ models: [{ id }] }) })
+    await f.click(f.button('discover'))
+    await f.click(f.modelExpand(id))
+    assert.equal(f.modelField(id, 'contextWindow').value, '')
+    assert.equal(f.modelField(id, 'maxTokens').value, '')
+    assert.equal(f.modelField(id, 'inputMode').value, 'inherit')
+    assert.equal(f.modelField(id, 'supportedOutputMode').value, 'inherit')
+    assert.equal(f.modelField(id, 'contextWindow').disabled, false)
+    await f.change(f.modelField(id, 'contextWindow'), '32768')
+    await f.change(f.modelField(id, 'maxTokens'), '4096')
+    await f.change(f.modelField(id, 'inputMode'), 'custom')
+    for (const type of ['audio', 'video', 'pdf']) await f.click(f.modelPanel(id).querySelector(`[data-google-model-input=${type}]`))
+    await f.change(f.modelField(id, 'supportedOutputMode'), 'custom')
+    await f.click(f.modelPanel(id).querySelector('[data-google-model-supported-output=audio]'))
+    await f.click(f.model(id))
+    await f.click(f.button('save'))
+    assert.deepEqual(f.saves[0].request.models.find(model => model.id === id).advanced, {
+      contextWindow: 32768, maxTokens: 4096, inputTypes: ['text', 'image'], outputTypes: ['text', 'audio'],
+    })
+  })
+
+  test('repeated discovery fills untouched missing fields while preserving manual edits and explicit inherit choices', async t => {
+    const id = 'gemini-3.8-flash'
+    let attempt = 0
+    const f = await mount(t, { discover: async () => ({ models: [{ id, name: 'Upstream Flash', contextWindow: 2000000,
+      maxTokens: ++attempt === 1 ? 32768 : 65536, inputTypes: attempt === 1 ? ['text', 'image'] : ['text', 'video'],
+      outputTypes: attempt === 1 ? ['text', 'image'] : ['text', 'audio'] }] }) })
+    await f.click(f.modelExpand(id))
+    await f.change(f.modelField(id, 'name'), 'Manual Name')
+    await f.click(f.button('discover'))
+    assert.equal(f.modelField(id, 'name').value, 'Manual Name')
+    assert.equal(f.modelField(id, 'contextWindow').value, '1000000', 'saved limits take priority over upstream metadata')
+    assert.equal(f.modelField(id, 'maxTokens').value, '32768', 'an unrelated edit does not prevent missing-field autofill')
+    assert.equal(f.modelField(id, 'inputMode').value, 'custom')
+    assert.equal(f.modelField(id, 'supportedOutputMode').value, 'custom')
+    await f.change(f.modelField(id, 'maxTokens'), '7000')
+    await f.click(f.modelPanel(id).querySelector('[data-google-model-input=audio]'))
+    await f.change(f.modelField(id, 'supportedOutputMode'), 'inherit')
+    await f.click(f.button('discover'))
+    assert.equal(f.modelField(id, 'maxTokens').value, '7000')
+    assert.equal(f.modelPanel(id).querySelector('[data-google-model-input=image]').checked, true)
+    assert.equal(f.modelPanel(id).querySelector('[data-google-model-input=audio]').checked, true)
+    assert.equal(f.modelPanel(id).querySelector('[data-google-model-input=video]').checked, false)
+    assert.equal(f.modelField(id, 'supportedOutputMode').value, 'inherit')
+    await f.click(f.button('save'))
+    assert.deepEqual(f.saves[0].request.models[0].advanced, { name: 'Manual Name', maxTokens: 7000,
+      inputTypes: ['text', 'image', 'audio'], outputTypes: null })
+  })
+
+  test('saved support declarations and output requests survive rediscovery and need no redundant Save', async t => {
+    const state = snapshot(), id = 'gemini-3.8-flash'
+    state.profiles[0].models[0].advanced = { contextWindow: 1000000, maxTokens: 8192,
+      inputTypes: ['text', 'pdf'], outputTypes: ['audio'], responseModalities: ['AUDIO'] }
+    const f = await mount(t, { snapshot: state, discover: async () => ({ models: [{ id, contextWindow: 2000000,
+      maxTokens: 65536, inputTypes: ['text', 'image'], outputTypes: ['text', 'image'] }] }) })
+    await f.click(f.modelExpand(id))
+    await f.click(f.button('discover'))
+    assert.equal(f.modelField(id, 'contextWindow').value, '1000000')
+    assert.equal(f.modelField(id, 'maxTokens').value, '8192')
+    assert.equal(f.modelPanel(id).querySelector('[data-google-model-input=pdf]').checked, true)
+    assert.equal(f.modelPanel(id).querySelector('[data-google-model-input=image]').checked, false)
+    assert.equal(f.modelPanel(id).querySelector('[data-google-model-supported-output=audio]').checked, true)
+    assert.equal(f.modelPanel(id).querySelector('[data-google-model-supported-output=text]').checked, false)
+    assert.equal(f.modelPanel(id).querySelector('[data-google-model-output=AUDIO]').checked, true)
+    assert.equal(f.button('save').disabled, true, 'discovery did not change any saved setting')
+  })
+
+  test('unsaved models refresh untouched metadata and keep edits even when unselected and later omitted upstream', async t => {
+    const id = 'proxy/refresh-metadata'
+    let attempt = 0
+    const f = await mount(t, { discover: async () => {
+      attempt++
+      return { models: attempt === 3 ? [] : [{ id, contextWindow: attempt === 1 ? 100000 : 200000,
+        maxTokens: attempt === 1 ? 16384 : 32768, inputTypes: attempt === 1 ? ['text', 'image'] : ['text', 'pdf'],
+        outputTypes: attempt === 1 ? ['text', 'image'] : ['text', 'audio'] }] }
+    } })
+    await f.click(f.button('discover'))
+    await f.click(f.model(id))
+    await f.click(f.modelExpand(id))
+    await f.change(f.modelField(id, 'contextWindow'), '300000')
+    await f.click(f.model(id))
+    await f.click(f.button('discover'))
+    assert.equal(f.modelField(id, 'contextWindow').value, '300000')
+    assert.equal(f.modelField(id, 'maxTokens').value, '32768', 'untouched autofill values follow the latest returned metadata')
+    assert.equal(f.modelPanel(id).querySelector('[data-google-model-input=pdf]').checked, true)
+    assert.equal(f.modelPanel(id).querySelector('[data-google-model-supported-output=audio]').checked, true)
+    await f.click(f.button('discover'))
+    assert.ok(f.model(id), 'an unselected model with unsaved edits remains available when omitted upstream')
+    assert.equal(f.modelField(id, 'contextWindow').value, '300000')
+    await f.click(f.model(id))
+    await f.click(f.button('save'))
+    const selected = f.saves[0].request.models.find(model => model.id === id)
+    assert.equal(selected.maxTokens, 32768)
+    assert.deepEqual(selected.advanced, { contextWindow: 300000, inputTypes: ['text', 'pdf'], outputTypes: ['text', 'audio'] })
+  })
+
+  test('autofilling an existing selected model enables Save without any manual edit', async t => {
+    const id = 'gemini-3.8-flash'
+    const f = await mount(t, { discover: async () => ({ models: [{ id, maxTokens: 16384,
+      inputTypes: ['text', 'pdf'], outputTypes: ['text'] }] }) })
+    await f.click(f.button('discover'))
+    assert.equal(f.button('save').disabled, false)
+    await f.click(f.button('save'))
+    assert.deepEqual(f.saves[0].request.models[0].advanced, { maxTokens: 16384, inputTypes: ['text', 'pdf'], outputTypes: ['text'] })
+  })
+
+  test('saved native max-token fallbacks and unknown-value sentinels survive discovery until explicitly edited', async t => {
+    const id = 'gemini-3.8-flash'
+    for (const savedMaximum of [8192, null]) {
+      const state = snapshot()
+      state.profiles[0].models[0].advanced = { maxTokens: savedMaximum }
+      const f = await mount(t, { snapshot: state, discover: async () => ({ models: [{ id, maxTokens: 65536 }] }) })
+      await f.click(f.button('discover'))
+      await f.click(f.modelExpand(id))
+      assert.equal(f.modelField(id, 'maxTokens').value, savedMaximum === null ? '' : '8192')
+      if (savedMaximum === null) assert.match(f.modelPanel(id).textContent, /nativeMaxTokensHint/)
+      assert.equal(f.button('save').disabled, true, 'catalog max tokens cannot replace a saved native override')
+      await f.change(f.modelField(id, 'name'), 'Manual Name')
+      await f.click(f.button('save'))
+      assert.deepEqual(f.saves[0].request.models[0].advanced, { name: 'Manual Name' }, 'unrelated edits preserve native max-token values')
+    }
+    const state = snapshot()
+    state.profiles[0].models[0].advanced = { maxTokens: null }
+    const override = await mount(t, { snapshot: state, discover: async () => ({ models: [{ id, maxTokens: 65536 }] }) })
+    await override.click(override.modelExpand(id))
+    await override.change(override.modelField(id, 'maxTokens'), '4096')
+    await override.click(override.button('discover'))
+    assert.equal(override.modelField(id, 'maxTokens').value, '4096')
+    await override.click(override.button('save'))
+    assert.deepEqual(override.saves[0].request.models[0].advanced, { maxTokens: 4096 }, 'an explicit edit can replace an unrepresentable native override')
+    const clear = await mount(t, { snapshot: state })
+    await clear.click(clear.modelExpand(id))
+    await clear.change(clear.modelField(id, 'maxTokens'), '4096')
+    await clear.change(clear.modelField(id, 'maxTokens'), '')
+    await clear.click(clear.button('save'))
+    assert.deepEqual(clear.saves[0].request.models[0].advanced, { maxTokens: null }, 'an explicit edit followed by clearing removes the native override even without discovered metadata')
+  })
+
+  test('discovery matches stored native model prefixes without duplicating rows or losing selected IDs and edits', async t => {
+    for (const prefix of ['models/', 'publishers/google/models/']) {
+      const canonical = 'proxy-flash', id = `${prefix}${canonical}`, state = snapshot()
+      state.profiles[0].models = [{ id, name: 'Stored Alias' }]
+      const f = await mount(t, { snapshot: state, discover: async () => ({ models: [
+        { id: canonical, contextWindow: 262144, maxTokens: 16384, inputTypes: ['text', 'pdf'], outputTypes: ['text'] },
+        { id: `models/${canonical}`, contextWindow: 262144, maxTokens: 16384, inputTypes: ['text', 'pdf'], outputTypes: ['text'] },
+      ] }) })
+      await f.click(f.modelExpand(id))
+      await f.change(f.modelField(id, 'maxTokens'), '8192')
+      await f.click(f.button('discover'))
+      assert.equal(f.container.querySelectorAll('[data-google-model]').length, 1, prefix)
+      assert.equal(f.model(id).checked, true)
+      assert.equal(f.model(canonical), undefined)
+      assert.equal(f.modelField(id, 'contextWindow').value, '262144')
+      assert.equal(f.modelField(id, 'maxTokens').value, '8192', 'the original stored ID still owns its draft')
+      assert.equal(f.modelPanel(id).querySelector('[data-google-model-input=pdf]').checked, true)
+      await f.change(f.container.querySelector('input[aria-label=manual]'), canonical)
+      await f.click(f.button('add'))
+      assert.equal(f.container.querySelectorAll('[data-google-model]').length, 1, 'manual aliases also reuse the existing row')
+      await f.click(f.button('save'))
+      assert.deepEqual(f.saves[0].request.models.map(model => model.id), [id])
+      assert.deepEqual(f.saves[0].request.models[0].advanced, {
+        contextWindow: 262144, maxTokens: 8192, inputTypes: ['text', 'pdf'], outputTypes: ['text'],
+      })
+    }
+  })
+
   test('every selected model is validated even when collapsed or filtered out, while unselected drafts do not block Save', async t => {
     const f = await mount(t)
     const id = 'gemini-3.8-flash'

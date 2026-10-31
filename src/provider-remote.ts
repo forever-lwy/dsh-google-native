@@ -37,12 +37,15 @@ const inputTypesSchema = z.array(z.enum(['text', 'image', 'audio', 'video', 'pdf
     'Input types must include text and must not contain duplicates.')
 const responseModalitiesSchema = z.array(z.enum(['TEXT', 'IMAGE', 'AUDIO'])).min(1).max(3)
   .refine(values => new Set(values).size === values.length, 'Output types must not contain duplicates.')
+const outputTypesSchema = z.array(z.enum(['text', 'image', 'audio'])).min(1).max(3)
+  .refine(values => new Set(values).size === values.length, 'Supported output types must not contain duplicates.')
 /** Safe editable fields. Capacity relationships are checked after merging a save,
  * so legacy native defaults can remain readable and be corrected in the UI. */
 export const modelAdvancedSchema = z.object({
   name: z.string().trim().min(1).max(1024).nullable().optional(),
   contextWindow: optionalCapacity, maxTokens: optionalCapacity,
   inputTypes: inputTypesSchema.nullable().optional(),
+  outputTypes: outputTypesSchema.nullable().optional(),
   responseModalities: responseModalitiesSchema.nullable().optional(),
   requestTimeoutMs: z.number().int().nonnegative().max(MAX_REQUEST_TIMEOUT_MS).nullable().optional(),
   reasoning: z.array(modelReasoningSchema).max(64).nullable().optional(),
@@ -58,6 +61,8 @@ export const providerModelSchema = z.object({
   name: z.string().max(1024).optional(), description: z.string().max(32_768).optional(),
   contextWindow: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   maxTokens: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+  /** Returned support metadata; it does not select request modalities. */
+  inputTypes: inputTypesSchema.optional(), outputTypes: outputTypesSchema.optional(),
   supportsGenerateContent: z.boolean().optional(),
   advanced: modelAdvancedSchema.optional(),
 }).strict()

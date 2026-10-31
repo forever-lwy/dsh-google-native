@@ -476,7 +476,7 @@ test('native model output defaults are visible without promotion and survive unr
     const original = structuredClone(model)
     const snapshot = await f.service.get({}, signal())
     const view = snapshot.profiles.find(profile => profile.provider === provider).models[0]
-    assert.equal(view.advanced.maxTokens, 2048)
+    assert.equal(view.advanced.maxTokens, 1024, 'raw REST output limits take priority over native SDK defaults')
     assert.equal(view.maxTokens, undefined, 'legacy native output limits do not change outer catalog metadata')
     assert.deepEqual(model, original, 'reading never promotes native defaults into model metadata')
     assert.equal(f.operations.length, 0)
@@ -519,5 +519,133 @@ test('legacy native output limits above a declared context remain readable while
     assert.equal(f.operations.length, 0)
     assert.equal(f.writes.length, 0)
     assert.deepEqual(f.profiles[provider], original)
+  }
+})
+
+test('upstream support declarations survive discovery and persist as defaults for new models without selecting response formats', async () => {
+  for (const provider of [studio, vertex]) {
+    const f = fixture()
+    const upstream = { id: 'metadata-complete-model', name: 'Complete metadata', contextWindow: 65536, maxTokens: 8192,
+      inputTypes: ['text', 'image', 'audio', 'video', 'pdf'], outputTypes: ['text', 'image', 'audio'], supportsGenerateContent: true }
+    f.discovery(async () => [upstream])
+    const discovered = await f.service.discover({ provider, connection: f.connection(provider) }, signal())
+    assert.deepEqual(discovered.models, [upstream])
+    assert.equal(f.operations.length, 0)
+    const result = await f.service.save({ provider, connection: f.connection(provider), models: discovered.models, expectedRevision: 4 }, signal())
+    const model = f.profiles[provider].models[0]
+    assert.equal(model.contextWindow, upstream.contextWindow)
+    assert.equal(model.maxTokens, upstream.maxTokens)
+    assert.deepEqual(model.inputTypes, upstream.inputTypes)
+    assert.deepEqual(model.outputTypes, upstream.outputTypes)
+    assert.equal(model.generationConfig?.responseModalities, undefined, 'support is not a request to generate every declared format')
+    const view = result.profiles.find(profile => profile.provider === provider).models[0]
+    assert.deepEqual(view.outputTypes, upstream.outputTypes)
+    assert.deepEqual(view.advanced.outputTypes, upstream.outputTypes)
+    assert.equal(view.advanced.responseModalities, undefined)
+    assert.doesNotThrow(() => providerSettingsSchema.parse(result))
+  }
+})
+
+test('explicit upstream metadata fills only missing saved fields and retains manual native limits and requested formats', async () => {
+  for (const nativeLimit of [
+    { maxOutputTokens: 2048 },
+    { httpOptions: { extraBody: { generationConfig: { maxOutputTokens: 2048 } } } },
+    { httpOptions: { extraBody: { generation_config: { max_output_tokens: 2048 } } } },
+  ]) {
+    const f = fixture()
+    const model = f.profiles[studio].models[0]
+    model.name = 'Manually named model'
+    model.inputTypes = ['text', 'pdf']
+    model.generationConfig = { ...nativeLimit, responseModalities: ['AUDIO'],
+      httpOptions: { ...nativeLimit.httpOptions, headers: { 'x-private': 'retain-secret' } } }
+    const original = structuredClone(model)
+    const result = await f.service.save({ provider: studio, connection: f.connection(studio), models: [{
+      id: model.id, name: 'Upstream name', contextWindow: 2097152, maxTokens: 65536,
+      inputTypes: ['text', 'image'], outputTypes: ['text', 'image'],
+    }], expectedRevision: 4 }, signal())
+    const saved = f.profiles[studio].models[0]
+    assert.equal(saved.name, original.name)
+    assert.equal(saved.contextWindow, original.contextWindow)
+    assert.equal(saved.maxTokens, undefined)
+    assert.deepEqual(saved.inputTypes, original.inputTypes)
+    assert.deepEqual(saved.outputTypes, ['text', 'image'])
+    assert.deepEqual(saved.generationConfig, original.generationConfig)
+    assert.deepEqual(saved.reasoning, original.reasoning)
+    assert.doesNotMatch(JSON.stringify(result), /retain-secret/)
+  }
+})
+
+test('missing saved model defaults are filled from carried metadata and explicit advanced edits or clears take priority', async () => {
+  const f = fixture()
+  f.profiles[studio].models = [{ id: 'saved-partial', generationConfig: { temperature: 0.5 } }]
+  const metadata = { id: 'saved-partial', contextWindow: 65536, maxTokens: 4096,
+    inputTypes: ['text', 'pdf'], outputTypes: ['image'] }
+  let result = await f.service.save({ provider: studio, connection: f.connection(studio), models: [metadata], expectedRevision: 4 }, signal())
+  assert.deepEqual(f.profiles[studio].models[0], { ...metadata, generationConfig: { temperature: 0.5 } })
+  assert.deepEqual(result.profiles[0].models[0].advanced.outputTypes, ['image'])
+  result = await f.service.save({ provider: studio, connection: f.connection(studio), models: [{ ...metadata,
+    advanced: { contextWindow: 131072, maxTokens: 8192, inputTypes: null, outputTypes: null },
+  }], expectedRevision: 5 }, signal())
+  assert.equal(f.profiles[studio].models[0].contextWindow, 131072)
+  assert.equal(f.profiles[studio].models[0].maxTokens, 8192)
+  assert.equal(f.profiles[studio].models[0].inputTypes, undefined)
+  assert.equal(f.profiles[studio].models[0].outputTypes, undefined)
+  assert.equal(result.profiles[0].models[0].advanced.outputTypes, undefined)
+  assert.equal(f.profiles[studio].models[0].generationConfig.temperature, 0.5)
+})
+
+test('invalid supported output declarations fail before host writes while absent catalog metadata stays unconfigured', async () => {
+  for (const outputTypes of [[], ['TEXT'], ['text', 'image', 'image'], ['video']]) {
+    const f = fixture()
+    assert.throws(() => validateProfile(studio, { ...f.profiles[studio], models: [{ id: 'invalid-output', outputTypes }] }))
+    await assert.rejects(f.service.save({ provider: studio, connection: f.connection(studio), models: [{ id: 'invalid-output', outputTypes }], expectedRevision: 4 }, signal()),
+      error => error.code === 'gateway/bad-request')
+    assert.equal(f.operations.length, 0)
+  }
+  const f = fixture()
+  await f.service.save({ provider: studio, connection: f.connection(studio), models: [{ id: 'metadata-absent' }], expectedRevision: 4 }, signal())
+  assert.deepEqual(f.profiles[studio].models, [{ id: 'metadata-absent' }])
+})
+
+test('safe native output-limit views preserve SDK and REST overrides during catalog autofill and expose opaque overrides only as null', async () => {
+  const cases = [
+    [{ maxOutputTokens: 500 }, 500],
+    [{ httpOptions: { extraBody: { generationConfig: { maxOutputTokens: 500 } } } }, 500],
+    [{ httpOptions: { extraBody: { generation_config: { max_output_tokens: 500 } } } }, 500],
+    [{ maxOutputTokens: 800, httpOptions: { extraBody: { generationConfig: { maxOutputTokens: 500 } } } }, 500],
+    [{ httpOptions: { extraBody: { generation_config: { max_output_tokens: 800 }, generationConfig: { maxOutputTokens: 500 } } } }, 500],
+    [{ httpOptions: { extraBody: { generationConfig: { maxOutputTokens: 'private-dynamic-limit' } } } }, null],
+    [{ maxOutputTokens: 0 }, null],
+    [{ maxOutputTokens: null }, null],
+  ]
+  for (const [generationConfig, expectedMax] of cases) {
+    const f = fixture()
+    const model = f.profiles[studio].models[0]
+    delete model.maxTokens
+    model.generationConfig = generationConfig
+    const original = structuredClone(model)
+    const snapshot = await f.service.get({}, signal())
+    const view = snapshot.profiles[0].models[0]
+    assert.equal(view.advanced.maxTokens, expectedMax)
+    assert.equal(view.maxTokens, undefined)
+    assert.doesNotThrow(() => providerSettingsSchema.parse(snapshot))
+    assert.doesNotMatch(JSON.stringify(snapshot), /private-dynamic-limit/)
+    assert.deepEqual(model, original, 'metadata reads never rewrite or promote private native options')
+    // The browser carries discovered metadata, while its unchanged safe value
+    // produces no advanced max-token patch. Other explicit edits remain valid.
+    await f.service.save({ provider: studio, connection: f.connection(studio), models: [{ id: model.id,
+      maxTokens: 1000, advanced: { name: 'Unrelated name edit' },
+    }], expectedRevision: 4 }, signal())
+    assert.equal(f.profiles[studio].models[0].maxTokens, undefined)
+    assert.deepEqual(f.profiles[studio].models[0].generationConfig, generationConfig)
+    await f.service.save({ provider: studio, connection: f.connection(studio), models: [{ id: model.id,
+      maxTokens: 1000, advanced: { maxTokens: 750 },
+    }], expectedRevision: 5 }, signal())
+    assert.equal(f.profiles[studio].models[0].maxTokens, 750, 'a direct user edit can replace the native default')
+    assert.equal(f.profiles[studio].models[0].generationConfig.maxOutputTokens, undefined)
+    for (const raw of Object.values(f.profiles[studio].models[0].generationConfig.httpOptions?.extraBody ?? {})) {
+      assert.equal(raw?.maxOutputTokens, undefined)
+      assert.equal(raw?.max_output_tokens, undefined)
+    }
   }
 })

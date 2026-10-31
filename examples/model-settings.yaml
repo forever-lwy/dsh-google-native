@@ -10,6 +10,7 @@
           contextWindow: 1048576
           maxTokens: 32768
           inputTypes: [text, image, audio, video, pdf]
+          outputTypes: [text]  # 支持的输出类型；实际请求类型由 responseModalities 单独控制
           reasoning:
             - id: dynamic
               name: 动态思考
@@ -29,6 +30,7 @@
           contextWindow: 1048576
           maxTokens: 32768
           inputTypes: [text, image, audio, video, pdf]
+          outputTypes: [text]
           reasoning:
             - id: low
               name: 低

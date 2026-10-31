@@ -128,3 +128,31 @@ test('real profile model advanced settings survive persistence and drive exact m
   assert.deepEqual(profile.models[0].generationConfig.httpOptions.headers, { 'x-private': 'never-expose-this-value' })
   assert.doesNotMatch(JSON.stringify(snapshot), /never-expose-this-value/)
 })
+
+test('real profiles persist upstream support declarations without changing native requested output formats', async t => {
+  const { ctx, dir } = await realSettingsProfile(t, { config: { aiStudio: { models: [{ id: 'metadata-partial', generationConfig: {
+    responseModalities: ['AUDIO'], httpOptions: { headers: { 'x-private': 'retain-private-model-option' } },
+  } }] } } })
+  const entry = ctx.configEditor.entries().find(item => item.options.id === 'dsh-google-native')
+  let snapshot = await ctx.nativeGoogleSettings.get({}, signal())
+  const metadata = { id: 'metadata-partial', contextWindow: 65536, maxTokens: 8192,
+    inputTypes: ['text', 'image', 'pdf'], outputTypes: ['text', 'image'] }
+  for (const provider of ['google-ai-studio', 'google-vertex-native']) {
+    const profile = snapshot.profiles.find(item => item.provider === provider)
+    snapshot = await ctx.nativeGoogleSettings.save({ provider, connection: profile.connection, models: [metadata],
+      expectedRevision: snapshot.revision,
+    }, signal())
+    const model = profilesOf(entry.fiber.config)[provider].models[0]
+    assert.deepEqual(model.inputTypes, metadata.inputTypes)
+    assert.deepEqual(model.outputTypes, metadata.outputTypes)
+    const options = buildGenerationConfig(profilesOf(entry.fiber.config)[provider], model,
+      { provider, model: model.id, messages: [] })
+    assert.deepEqual(options.responseModalities, provider === 'google-ai-studio' ? ['AUDIO'] : undefined)
+    assert.equal(options.maxOutputTokens, metadata.maxTokens)
+    assert.deepEqual(snapshot.profiles.find(item => item.provider === provider).models[0].advanced.outputTypes, metadata.outputTypes)
+  }
+  const stored = await readFile(join(dir, 'cordis.patch.yml'), 'utf8')
+  assert.match(stored, /outputTypes:/)
+  assert.match(stored, /inputTypes:/)
+  assert.doesNotMatch(JSON.stringify(snapshot), /retain-private-model-option/)
+})

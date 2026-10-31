@@ -45,7 +45,7 @@ function canonicalModelId(id: string): string { return id.replace(/^(?:models|pu
 /** Only UI-owned fields cross the browser boundary; headers and opaque native options stay private. */
 function viewAdvanced(model: GoogleModelConfig): GoogleModelAdvanced | undefined {
   const view: GoogleModelAdvanced = {}
-  for (const key of ['contextWindow', 'maxTokens', 'inputTypes', 'defaultReasoning'] as const) {
+  for (const key of ['contextWindow', 'maxTokens', 'inputTypes', 'outputTypes', 'defaultReasoning'] as const) {
     if (model[key] !== undefined) Object.assign(view, { [key]: structuredClone(model[key]) })
   }
   if (model.name?.trim()) view.name = model.name
@@ -57,10 +57,8 @@ function viewAdvanced(model: GoogleModelConfig): GoogleModelAdvanced | undefined
   const config = model.generationConfig
   // Legacy native defaults remain in place until this particular field is
   // edited, but the model editor still needs to show their effective limit.
-  const nativeMaxTokens = config?.maxOutputTokens
-  if (view.maxTokens === undefined && typeof nativeMaxTokens === 'number' && Number.isSafeInteger(nativeMaxTokens) && nativeMaxTokens > 0) {
-    view.maxTokens = nativeMaxTokens
-  }
+  const nativeMaxTokens = nativeMaxTokensOverride(model)
+  if (view.maxTokens === undefined && nativeMaxTokens !== undefined) view.maxTokens = nativeMaxTokens
   const outputs = config?.responseModalities
   if (Array.isArray(outputs) && outputs.length > 0 && outputs.length <= 3
     && outputs.every(type => ['TEXT', 'IMAGE', 'AUDIO'].includes(type)) && new Set(outputs).size === outputs.length) {
@@ -80,7 +78,7 @@ function viewAdvanced(model: GoogleModelConfig): GoogleModelAdvanced | undefined
 
 function applyAdvanced(model: GoogleModelConfig, patch: GoogleModelAdvanced): GoogleModelConfig {
   const result = structuredClone(model)
-  for (const key of ['name', 'contextWindow', 'maxTokens', 'inputTypes', 'reasoning', 'defaultReasoning'] as const) {
+  for (const key of ['name', 'contextWindow', 'maxTokens', 'inputTypes', 'outputTypes', 'reasoning', 'defaultReasoning'] as const) {
     const value = patch[key]
     if (value === undefined) continue
     if (value === null) delete result[key]
@@ -126,6 +124,26 @@ function applyAdvanced(model: GoogleModelConfig, patch: GoogleModelAdvanced): Go
   return result
 }
 
+/** Read only this safe native field. Null marks an existing opaque override so
+ * discovery cannot mistake it for an absent default and overwrite it. */
+function nativeMaxTokensOverride(model: GoogleModelConfig): number | null | undefined {
+  const config = model.generationConfig
+  let value: unknown = config?.maxOutputTokens
+  const extra = config?.httpOptions?.extraBody
+  // REST overrides take priority over SDK defaults. Match the camel-case
+  // precedence used when explicit controls normalize duplicate REST aliases.
+  for (const key of ['generation_config', 'generationConfig']) {
+    const raw = extra?.[key]
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue
+    for (const alias of ['max_output_tokens', 'maxOutputTokens']) {
+      const candidate = (raw as Record<string, unknown>)[alias]
+      if (candidate !== undefined) value = candidate
+    }
+  }
+  if (value === undefined) return undefined
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null
+}
+
 /** Retain user-authored advanced model options; newly discovered known IDs inherit their exact preset. */
 function selectedModels(profile: GoogleProfile, input: GoogleProviderModel[]): GoogleModelConfig[] {
   const ids = new Set<string>()
@@ -142,6 +160,12 @@ function selectedModels(profile: GoogleProfile, input: GoogleProviderModel[]): G
       ...(item.contextWindow === undefined ? {} : { contextWindow: item.contextWindow }),
       ...(item.maxTokens === undefined ? {} : { maxTokens: item.maxTokens }),
       ...(preset && canonical !== item.id ? { capabilities: resolveCapabilities(profile.provider, preset) } : {}),
+    }
+    // Discovery reports defaults, while advanced is an explicit user patch.
+    // Existing values, including private native limits, always take priority.
+    for (const key of ['contextWindow', 'maxTokens', 'inputTypes', 'outputTypes'] as const) {
+      if (result[key] !== undefined || item[key] === undefined || key === 'maxTokens' && nativeMaxTokensOverride(result) !== undefined) continue
+      Object.assign(result, { [key]: structuredClone(item[key]) })
     }
     return item.advanced === undefined ? result : applyAdvanced(result, item.advanced)
   })
@@ -202,6 +226,8 @@ export class GoogleProviderSettingsService extends TypertRemoteService {
             ...(model.name === undefined ? {} : { name: model.name }),
             ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
             ...(model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens }),
+            ...(model.inputTypes === undefined ? {} : { inputTypes: [...model.inputTypes] }),
+            ...(model.outputTypes === undefined ? {} : { outputTypes: [...model.outputTypes] }),
             ...(advanced === undefined ? {} : { advanced }),
           }
         }) }

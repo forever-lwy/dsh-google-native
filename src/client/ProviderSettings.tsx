@@ -22,6 +22,7 @@ export interface ProviderSettingsFace {
 interface Draft {
   connection: ProviderConnection
   models: ProviderModel[]
+  savedModels: Record<string, ProviderModel>
   selected: string[]
   apiKey: string
   filter: string
@@ -38,6 +39,7 @@ type FormProps = Pick<Props, 'read' | 'discover' | 'save' | 'useRemoteAccess' | 
 
 function initialDraft(profile: ProviderProfile): Draft {
   return { connection: { ...profile.connection }, models: profile.models.map(model => ({ ...model })),
+    savedModels: Object.fromEntries(profile.models.map(model => [model.id, model])),
     selected: profile.models.map(model => model.id), apiKey: '', filter: '', manual: '', discovered: false,
     timeoutSeconds: String((profile.connection.requestTimeoutMs ?? 0) / 1000), timeoutBadInput: false, modelEdits: {} }
 }
@@ -50,12 +52,62 @@ function requestTimeoutMs(seconds: string): number | undefined {
   return Number.isSafeInteger(milliseconds) && milliseconds >= 0 && milliseconds <= MAX_REQUEST_TIMEOUT_MS ? milliseconds : undefined
 }
 
+function entry<Value>(values: Record<string, Value>, key: string): Value | undefined {
+  return Object.hasOwn(values, key) ? values[key] : undefined
+}
+
+function canonicalModelId(id: string): string {
+  return id.replace(/^(?:models|publishers\/google\/models)\/([^/]+)$/, '$1')
+}
+
+function modelPatch(draft: Draft, model: ProviderModel) {
+  const edit = entry(draft.modelEdits, model.id)
+  // New model capacities/names already travel as ordinary discovery fields.
+  // Existing models are compared with their saved state, so autofilled fields
+  // count as changes even when the user has not opened the advanced editor.
+  const baseline = entry(draft.savedModels, model.id) ?? { id: model.id, name: model.name, contextWindow: model.contextWindow, maxTokens: model.maxTokens }
+  const advanced = modelSettingsPatch(baseline, edit ?? initialModelSettings(model))
+  if (!advanced || !edit) return advanced
+  // An explicit blank/inherit choice must take priority over discovery defaults,
+  // including fields that were empty in the original saved model.
+  if (edit.editedFields.includes('contextWindow') && !edit.contextWindow.trim() && model.contextWindow !== undefined) advanced.contextWindow = null
+  if (edit.editedFields.includes('maxTokens') && !edit.maxTokens.trim() && (model.maxTokens !== undefined || model.advanced?.maxTokens === null)) advanced.maxTokens = null
+  if (edit.editedFields.includes('inputMode') && edit.inputMode === 'inherit' && model.inputTypes !== undefined) advanced.inputTypes = null
+  if (edit.editedFields.includes('supportedOutputMode') && edit.supportedOutputMode === 'inherit' && model.outputTypes !== undefined) advanced.outputTypes = null
+  return advanced
+}
+
+/** Preserve configured fields; only metadata and untouched form fields refresh. */
+function discoveredModel(previous: ProviderModel | undefined, upstream: ProviderModel, saved: ProviderModel | undefined): ProviderModel {
+  const advanced = { ...previous?.advanced, ...upstream.advanced, ...saved?.advanced }
+  const result = { ...previous, ...upstream, ...saved, advanced }
+  for (const key of ['contextWindow', 'maxTokens', 'inputTypes', 'outputTypes'] as const) {
+    const value = saved?.advanced?.[key] !== undefined ? saved.advanced[key] : saved?.[key] !== undefined ? saved[key]
+      : upstream.advanced?.[key] !== undefined ? upstream.advanced[key] : upstream[key] !== undefined ? upstream[key] : advanced[key]
+    if (value !== undefined) {
+      Object.assign(advanced, { [key]: value })
+      if (value !== null) Object.assign(result, { [key]: value })
+    }
+  }
+  return result
+}
+
+function refreshedModelEdit(edit: ModelSettingsDraft, model: ProviderModel): ModelSettingsDraft {
+  const refreshed = initialModelSettings(model)
+  const result = { ...edit }
+  for (const keys of [['name'], ['contextWindow'], ['maxTokens'], ['inputMode', 'inputTypes'], ['supportedOutputMode', 'outputTypes']] as const) {
+    if (!keys.some(key => edit.editedFields.includes(key))) for (const key of keys) Object.assign(result, { [key]: refreshed[key] })
+  }
+  return result
+}
+
 function selectedModels(draft: Draft): ProviderModel[] {
   const selected = new Set(draft.selected)
   return draft.models.filter(model => selected.has(model.id)).map(model => {
-    const { id, name, contextWindow, maxTokens } = model
-    const advanced = draft.modelEdits[id] ? modelSettingsPatch(model, draft.modelEdits[id]) : undefined
+    const { id, name, contextWindow, maxTokens, inputTypes, outputTypes } = model
+    const advanced = modelPatch(draft, model)
     return { id, ...(name ? { name } : {}), ...(contextWindow === undefined ? {} : { contextWindow }), ...(maxTokens === undefined ? {} : { maxTokens }),
+      ...(inputTypes === undefined ? {} : { inputTypes }), ...(outputTypes === undefined ? {} : { outputTypes }),
       ...(advanced && Object.keys(advanced).length ? { advanced } : {}),
     }
   })
@@ -122,10 +174,9 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
   const timeoutMs = draft ? requestTimeoutMs(draft.timeoutSeconds) : undefined
   const validTimeout = timeoutMs !== undefined && draft?.timeoutBadInput === false
   const invalidModels = draft?.models.filter(model => selected.has(model.id)
-    && parseModelSettings(draft.modelEdits[model.id] ?? initialModelSettings(model)) === undefined) ?? []
+    && parseModelSettings(entry(draft.modelEdits, model.id) ?? initialModelSettings(model)) === undefined) ?? []
   const validModels = invalidModels.length === 0
-  const changedModels = draft?.models.some(model => selected.has(model.id) && draft.modelEdits[model.id]
-    && Object.keys(modelSettingsPatch(model, draft.modelEdits[model.id]) ?? {}).length > 0) ?? false
+  const changedModels = draft?.models.some(model => selected.has(model.id) && Object.keys(modelPatch(draft, model) ?? {}).length > 0) ?? false
   const dirty = draft !== undefined && profile !== undefined && (draft.apiKey.trim().length > 0
     || !validModels || changedModels
     || !validTimeout || timeoutMs !== (profile.connection.requestTimeoutMs ?? 0)
@@ -155,9 +206,24 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
         const old = previous[target]
         if (!old) return previous
         // Saved or selected entries remain available even when a listing omits them.
-        const models = new Map(old.models.filter(model => old.selected.includes(model.id) || savedIds.has(model.id)).map(model => [model.id, model]))
-        for (const model of value.models) models.set(model.id, { ...model, ...models.get(model.id) })
-        return { ...previous, [target]: { ...old, models: [...models.values()], discovered: true } }
+        const models = new Map(old.models.filter(model => old.selected.includes(model.id) || savedIds.has(model.id) || entry(old.modelEdits, model.id)).map(model => [model.id, model]))
+        const identities = new Map<string, ProviderModel>()
+        for (const model of [...Object.values(old.savedModels), ...old.models]) {
+          const key = canonicalModelId(model.id)
+          if (!identities.has(key)) identities.set(key, model)
+        }
+        const modelEdits = { ...old.modelEdits }
+        for (const model of value.models) {
+          const key = canonicalModelId(model.id)
+          const prior = identities.get(key)
+          const id = prior?.id ?? model.id
+          const merged = discoveredModel(models.get(id) ?? prior, { ...model, id }, entry(old.savedModels, id))
+          models.set(id, merged)
+          identities.set(key, merged)
+          const edit = entry(modelEdits, id)
+          if (edit) modelEdits[id] = refreshedModelEdit(edit, merged)
+        }
+        return { ...previous, [target]: { ...old, models: [...models.values()], modelEdits, discovered: true } }
       })
       setStatus('idle')
     } catch { if (!controller.signal.aborted && current === generation.current) setStatus('discover-error') }
@@ -277,7 +343,7 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
                 aria-expanded={expandedModels.includes(model.id)} aria-label={`${t('advancedSettings')} ${model.name ?? model.id}`}
                 onClick={() => setExpandedModels(old => old.includes(model.id) ? old.filter(id => id !== model.id) : [...old, model.id])}>{t('advancedSettings')}</button>
             </div>
-            {expandedModels.includes(model.id) && <ModelSettings model={model} draft={draft.modelEdits[model.id] ?? initialModelSettings(model)}
+            {expandedModels.includes(model.id) && <ModelSettings model={model} draft={entry(draft.modelEdits, model.id) ?? initialModelSettings(model)}
               disabled={!editable} t={t} onChange={edit => patchDraft(old => ({ ...old, modelEdits: { ...old.modelEdits, [model.id]: edit } }))}/>}
           </div>)}
           {!visible.length && <p className="dsh-google-provider-empty">{draft.models.length ? t('noMatches') : t('noModels')}</p>}
@@ -287,10 +353,13 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
             onChange={event => { const manual = event.currentTarget.value; patchDraft(old => ({ ...old, manual })) }}/>
           <button type="button" className="dsh-google-provider-button" disabled={!editable || !draft.manual.trim()} onClick={() => {
             const id = draft.manual.trim()
-            patchDraft(old => ({ ...old, manual: '', filter: '',
-              models: old.models.some(model => model.id === id) ? old.models : [...old.models, { id, name: id }],
-              selected: [...new Set([...old.selected, id])],
-            }))
+            patchDraft(old => {
+              const existing = old.models.find(model => canonicalModelId(model.id) === canonicalModelId(id))
+              return { ...old, manual: '', filter: '',
+                models: existing ? old.models : [...old.models, { id, name: id }],
+                selected: [...new Set([...old.selected, existing?.id ?? id])],
+              }
+            })
           }}>{t('add')}</button>
         </div>
         <p className="dsh-google-provider-hint">{t('modelsHint')}</p>

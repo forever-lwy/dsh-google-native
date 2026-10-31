@@ -9,6 +9,7 @@ import { normalizeNativeEndpoint } from './client-factory.js'
 export const GOOGLE_PROVIDERS = ['google-ai-studio', 'google-vertex-native'] as const
 export type GoogleProvider = typeof GOOGLE_PROVIDERS[number]
 export type GoogleInputType = 'text' | 'image' | 'audio' | 'video' | 'pdf'
+export type GoogleOutputType = 'text' | 'image' | 'audio'
 
 export interface GoogleReasoningConfig {
   id: string
@@ -25,6 +26,8 @@ export interface GoogleModelConfig {
   maxTokens?: number
   /** Explicit native input capabilities; omitted preserves legacy adapter behavior. */
   inputTypes?: GoogleInputType[]
+  /** Supported native outputs, separate from the requested responseModalities. */
+  outputTypes?: GoogleOutputType[]
   /** Explicit selectable settings; no model capabilities are guessed for custom IDs. */
   reasoning?: GoogleReasoningConfig[]
   defaultReasoning?: string
@@ -83,6 +86,7 @@ const model = z.object({
   // Schemastery arrays otherwise materialize absent fields as [], which would
   // turn legacy models into an explicit invalid empty input declaration.
   inputTypes: z.array(z.union(['text', 'image', 'audio', 'video', 'pdf'])).extra('default', undefined).description('此模型原生接受的输入类型，必须包含 text'),
+  outputTypes: z.array(z.union(['text', 'image', 'audio'])).extra('default', undefined).description('此模型支持的原生输出类型，不指定请求输出格式'),
   reasoning: z.array(reasoning), defaultReasoning: z.string(),
   generationConfig: z.dict(z.any()).description('Google GenerateContentConfig 原生 JSON 参数'),
   capabilities: z.object({
@@ -182,6 +186,11 @@ export function validateProfile(provider: GoogleProvider, input: VolatileSnapsho
       || entry.inputTypes.some(type => !['text', 'image', 'audio', 'video', 'pdf'].includes(type))
       || new Set(entry.inputTypes).size !== entry.inputTypes.length)) {
       throw new LlmError('模型输入类型必须包含 text，且仅包含不重复的受支持类型', 'INVALID_CONFIG')
+    }
+    if (entry.outputTypes !== undefined && (!Array.isArray(entry.outputTypes) || entry.outputTypes.length === 0
+      || entry.outputTypes.some(type => !['text', 'image', 'audio'].includes(type))
+      || new Set(entry.outputTypes).size !== entry.outputTypes.length)) {
+      throw new LlmError('模型输出类型必须包含至少一种不重复的受支持类型', 'INVALID_CONFIG')
     }
     const efforts = new Set<string>()
     for (const effort of entry.reasoning ?? []) {

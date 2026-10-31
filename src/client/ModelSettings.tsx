@@ -7,6 +7,7 @@ import {
 import type {} from './provider-locales.js'
 
 type InputType = NonNullable<GoogleModelAdvanced['inputTypes']>[number]
+type SupportedOutputType = NonNullable<GoogleModelAdvanced['outputTypes']>[number]
 type OutputType = NonNullable<GoogleModelAdvanced['responseModalities']>[number]
 type Format = 'inherit' | 'budget' | 'level' | 'custom'
 interface EffortDraft {
@@ -22,6 +23,8 @@ export interface ModelSettingsDraft {
   maxTokens: string
   inputMode: 'inherit' | 'custom'
   inputTypes: InputType[]
+  supportedOutputMode: 'inherit' | 'custom'
+  outputTypes: SupportedOutputType[]
   outputMode: 'inherit' | 'custom'
   responseModalities: OutputType[]
   timeoutSeconds: string
@@ -33,15 +36,19 @@ export interface ModelSettingsDraft {
   fallbackBudget: string
   fallbackLevel: string
   badInputs: string[]
+  editedFields: string[]
 }
 type Translate = PropsLocale<'googleProviderSettings'>['t']
 
 const inputTypes: InputType[] = ['text', 'image', 'audio', 'video', 'pdf']
+const supportedOutputTypes: SupportedOutputType[] = ['text', 'image', 'audio']
 const outputTypes: OutputType[] = ['TEXT', 'IMAGE', 'AUDIO']
 const numberText = (value: number | null | undefined) => value == null ? '' : String(value)
 
 export function initialModelSettings(model: GoogleProviderModel): ModelSettingsDraft {
   const advanced = model.advanced ?? {}
+  const declaredInputs = advanced.inputTypes === undefined ? model.inputTypes : advanced.inputTypes
+  const declaredOutputs = advanced.outputTypes === undefined ? model.outputTypes : advanced.outputTypes
   const thinking = advanced.thinkingConfig ?? {}
   const efforts: EffortDraft[] = (advanced.reasoning ?? []).map(row => ({
     id: row.id, name: row.name,
@@ -57,14 +64,16 @@ export function initialModelSettings(model: GoogleProviderModel): ModelSettingsD
     name: advanced.name === null ? '' : advanced.name ?? model.name ?? '',
     contextWindow: numberText(advanced.contextWindow === undefined ? model.contextWindow : advanced.contextWindow),
     maxTokens: numberText(advanced.maxTokens === undefined ? model.maxTokens : advanced.maxTokens),
-    inputMode: advanced.inputTypes == null ? 'inherit' : 'custom',
-    inputTypes: [...(advanced.inputTypes ?? inputTypes)],
+    inputMode: declaredInputs == null ? 'inherit' : 'custom',
+    inputTypes: [...(declaredInputs ?? inputTypes)],
+    supportedOutputMode: declaredOutputs == null ? 'inherit' : 'custom',
+    outputTypes: [...(declaredOutputs ?? ['text'])],
     outputMode: advanced.responseModalities == null ? 'inherit' : 'custom',
     responseModalities: [...(advanced.responseModalities ?? ['TEXT'])],
     timeoutSeconds: advanced.requestTimeoutMs == null ? '' : String(advanced.requestTimeoutMs / 1000),
     includeThoughts: thinking.includeThoughts == null ? 'inherit' : thinking.includeThoughts ? 'on' : 'off',
     thinkingFormat, efforts, defaultReasoning: advanced.defaultReasoning ?? '', fallbackFormat,
-    fallbackBudget: numberText(thinking.thinkingBudget), fallbackLevel: thinking.thinkingLevel ?? '', badInputs: [],
+    fallbackBudget: numberText(thinking.thinkingBudget), fallbackLevel: thinking.thinkingLevel ?? '', badInputs: [], editedFields: [],
   }
 }
 
@@ -109,6 +118,7 @@ export function parseModelSettings(draft: ModelSettingsDraft): GoogleModelAdvanc
   const advanced = {
     name: draft.name.trim() || null, contextWindow, maxTokens, requestTimeoutMs,
     inputTypes: draft.inputMode === 'inherit' ? null : inputTypes.filter(type => draft.inputTypes.includes(type)),
+    outputTypes: draft.supportedOutputMode === 'inherit' ? null : supportedOutputTypes.filter(type => draft.outputTypes.includes(type)),
     responseModalities: draft.outputMode === 'inherit' ? null : outputTypes.filter(type => draft.responseModalities.includes(type)),
     reasoning: reasoning.length ? reasoning : null, defaultReasoning,
     thinkingConfig: {
@@ -131,12 +141,13 @@ export function modelSettingsPatch(model: GoogleProviderModel, draft: ModelSetti
     name: draft.name.trim() !== initial.name.trim(), contextWindow: draft.contextWindow.trim() !== initial.contextWindow.trim(),
     maxTokens: draft.maxTokens.trim() !== initial.maxTokens.trim(), requestTimeoutMs: draft.timeoutSeconds.trim() !== initial.timeoutSeconds.trim(),
     inputTypes: draft.inputMode !== initial.inputMode || JSON.stringify(draft.inputTypes) !== JSON.stringify(initial.inputTypes),
+    outputTypes: draft.supportedOutputMode !== initial.supportedOutputMode || JSON.stringify(draft.outputTypes) !== JSON.stringify(initial.outputTypes),
     responseModalities: draft.outputMode !== initial.outputMode || JSON.stringify(draft.responseModalities) !== JSON.stringify(initial.responseModalities),
     reasoning: draft.thinkingFormat !== initial.thinkingFormat || JSON.stringify(draft.efforts) !== JSON.stringify(initial.efforts),
     defaultReasoning: draft.defaultReasoning.trim() !== initial.defaultReasoning.trim(),
   }
   const patch: GoogleModelAdvanced = {}
-  for (const key of ['name', 'contextWindow', 'maxTokens', 'inputTypes', 'responseModalities', 'requestTimeoutMs', 'reasoning', 'defaultReasoning'] as const) {
+  for (const key of ['name', 'contextWindow', 'maxTokens', 'inputTypes', 'outputTypes', 'responseModalities', 'requestTimeoutMs', 'reasoning', 'defaultReasoning'] as const) {
     if (baseline ? JSON.stringify(value[key]) !== JSON.stringify(baseline[key]) : directlyChanged[key]) Object.assign(patch, { [key]: value[key] })
   }
   const thinking: NonNullable<GoogleModelAdvanced['thinkingConfig']> = {}
@@ -167,7 +178,9 @@ export function ModelSettings({ model, draft, disabled, t, onChange }: {
 }) {
   const id = useId()
   const valid = parseModelSettings(draft) !== undefined
-  const patch = (next: Partial<ModelSettingsDraft>) => onChange({ ...draft, ...next })
+  const patch = (next: Partial<ModelSettingsDraft>) => onChange({ ...draft, ...next,
+    editedFields: [...new Set([...draft.editedFields, ...Object.keys(next).filter(key => key !== 'badInputs')])],
+  })
   const numberField = (key: 'contextWindow' | 'maxTokens' | 'timeoutSeconds', label: Parameters<Translate>[0], hint: Parameters<Translate>[0]) => <label className="dsh-google-provider-field">
     <span>{t(label)}</span><input type="number" value={draft[key]} disabled={disabled}
       min={key === 'timeoutSeconds' ? '0' : '1'} max={key === 'timeoutSeconds' ? MAX_REQUEST_TIMEOUT_MS / 1000 : Number.MAX_SAFE_INTEGER}
@@ -175,7 +188,7 @@ export function ModelSettings({ model, draft, disabled, t, onChange }: {
         const value = event.currentTarget.value
         const bad = event.currentTarget.validity.badInput
         patch({ [key]: value, badInputs: bad ? [...new Set([...draft.badInputs, key])] : draft.badInputs.filter(item => item !== key) })
-      }}/><span className="dsh-google-provider-hint">{t(hint)}</span>
+      }}/><span className="dsh-google-provider-hint">{t(key === 'maxTokens' && model.advanced?.maxTokens === null && !draft.editedFields.includes('maxTokens') ? 'nativeMaxTokensHint' : hint)}</span>
   </label>
   const format = (next: Format) => {
     if (next === 'inherit') return patch({ thinkingFormat: next, efforts: [], defaultReasoning: '', fallbackFormat: 'inherit', fallbackBudget: '', fallbackLevel: '' })
@@ -210,6 +223,17 @@ export function ModelSettings({ model, draft, disabled, t, onChange }: {
         <input type="checkbox" checked={draft.inputTypes.includes(type)} disabled={disabled || type === 'text'} data-google-model-input={type}
           onChange={event => patch({ inputTypes: event.currentTarget.checked ? [...draft.inputTypes, type] : draft.inputTypes.filter(item => item !== type) })}/>
         <span>{t(type === 'text' ? 'typeText' : type === 'image' ? 'typeImage' : type === 'audio' ? 'typeAudio' : type === 'video' ? 'typeVideo' : 'typePdf')}</span>
+      </label>)}</div>}
+    </fieldset>
+    <fieldset><legend>{t('supportedOutputTypes')}</legend>
+      <label className="dsh-google-provider-field"><span className="dsh-google-provider-hint">{t('supportedOutputTypesHint')}</span>
+        <select value={draft.supportedOutputMode} disabled={disabled} data-google-model-setting="supportedOutputMode" onChange={event => patch({ supportedOutputMode: event.currentTarget.value as ModelSettingsDraft['supportedOutputMode'] })}>
+          <option value="inherit">{t('inherit')}</option><option value="custom">{t('custom')}</option>
+        </select></label>
+      {draft.supportedOutputMode === 'custom' && <div className="dsh-google-provider-model-types">{supportedOutputTypes.map(type => <label key={type}>
+        <input type="checkbox" checked={draft.outputTypes.includes(type)} disabled={disabled} data-google-model-supported-output={type}
+          onChange={event => patch({ outputTypes: event.currentTarget.checked ? [...draft.outputTypes, type] : draft.outputTypes.filter(item => item !== type) })}/>
+        <span>{t(type === 'text' ? 'typeText' : type === 'image' ? 'typeImage' : 'typeAudio')}</span>
       </label>)}</div>}
     </fieldset>
     <fieldset><legend>{t('outputTypes')}</legend>
