@@ -8,6 +8,7 @@ import {
   type GoogleProviderConnection, type GoogleProviderModel, type GoogleProviderProfileView, type GoogleProviderSettings,
   type GoogleProviderDiscoverRequest, type GoogleProviderSaveRequest,
 } from '../provider-remote.js'
+import { ModelSettings, initialModelSettings, parseModelSettings, modelSettingsPatch, type ModelSettingsDraft } from './ModelSettings.js'
 
 export type ProviderConnection = GoogleProviderConnection
 export type ProviderModel = GoogleProviderModel
@@ -28,6 +29,7 @@ interface Draft {
   discovered: boolean
   timeoutSeconds: string
   timeoutBadInput: boolean
+  modelEdits: Record<string, ModelSettingsDraft>
 }
 type Props = PropsRuntime<'settings.models.provider-card'> & PropsLocale<'googleProviderSettings'> & ProviderSettingsFace
 type FormProps = Pick<Props, 'read' | 'discover' | 'save' | 'useRemoteAccess' | 't'> & {
@@ -37,7 +39,7 @@ type FormProps = Pick<Props, 'read' | 'discover' | 'save' | 'useRemoteAccess' | 
 function initialDraft(profile: ProviderProfile): Draft {
   return { connection: { ...profile.connection }, models: profile.models.map(model => ({ ...model })),
     selected: profile.models.map(model => model.id), apiKey: '', filter: '', manual: '', discovered: false,
-    timeoutSeconds: String((profile.connection.requestTimeoutMs ?? 0) / 1000), timeoutBadInput: false }
+    timeoutSeconds: String((profile.connection.requestTimeoutMs ?? 0) / 1000), timeoutBadInput: false, modelEdits: {} }
 }
 
 /** Decimal seconds preserve existing millisecond precision without floating-point rounding. */
@@ -50,9 +52,13 @@ function requestTimeoutMs(seconds: string): number | undefined {
 
 function selectedModels(draft: Draft): ProviderModel[] {
   const selected = new Set(draft.selected)
-  return draft.models.filter(model => selected.has(model.id)).map(({ id, name, contextWindow, maxTokens }) => ({
-    id, ...(name ? { name } : {}), ...(contextWindow === undefined ? {} : { contextWindow }), ...(maxTokens === undefined ? {} : { maxTokens }),
-  }))
+  return draft.models.filter(model => selected.has(model.id)).map(model => {
+    const { id, name, contextWindow, maxTokens } = model
+    const advanced = draft.modelEdits[id] ? modelSettingsPatch(model, draft.modelEdits[id]) : undefined
+    return { id, ...(name ? { name } : {}), ...(contextWindow === undefined ? {} : { contextWindow }), ...(maxTokens === undefined ? {} : { maxTokens }),
+      ...(advanced && Object.keys(advanced).length ? { advanced } : {}),
+    }
+  })
 }
 
 /** Each Models-page provider card owns one route's configuration form. */
@@ -82,6 +88,7 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
   const [reload, setReload] = useState(0)
   const generation = useRef(0)
   const operation = useRef<AbortController>()
+  const [expandedModels, setExpandedModels] = useState<string[]>([])
   const baseId = useId()
 
   useEffect(() => {
@@ -92,6 +99,7 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
     setDrafts({})
     setLoadError(false)
     setStatus('idle')
+    setExpandedModels([])
     if (canRead) void read(controller.signal).then(value => {
       if (controller.signal.aborted || current !== generation.current) return
       setSnapshot(value)
@@ -113,7 +121,13 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
   const selected = new Set(draft?.selected ?? [])
   const timeoutMs = draft ? requestTimeoutMs(draft.timeoutSeconds) : undefined
   const validTimeout = timeoutMs !== undefined && draft?.timeoutBadInput === false
+  const invalidModels = draft?.models.filter(model => selected.has(model.id)
+    && parseModelSettings(draft.modelEdits[model.id] ?? initialModelSettings(model)) === undefined) ?? []
+  const validModels = invalidModels.length === 0
+  const changedModels = draft?.models.some(model => selected.has(model.id) && draft.modelEdits[model.id]
+    && Object.keys(modelSettingsPatch(model, draft.modelEdits[model.id]) ?? {}).length > 0) ?? false
   const dirty = draft !== undefined && profile !== undefined && (draft.apiKey.trim().length > 0
+    || !validModels || changedModels
     || !validTimeout || timeoutMs !== (profile.connection.requestTimeoutMs ?? 0)
     || JSON.stringify(draft.connection) !== JSON.stringify(profile.connection)
     || JSON.stringify([...draft.selected].sort()) !== JSON.stringify(profile.models.map(model => model.id).sort()))
@@ -151,7 +165,7 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
   }
 
   const saveSettings = async () => {
-    if (!draft || !snapshot || !editable || !dirty || !validTimeout) return
+    if (!draft || !snapshot || !editable || !dirty || !validTimeout || !validModels) return
     const current = ++generation.current
     const target = provider
     const controller = new AbortController()
@@ -249,15 +263,23 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
           <button type="button" className="dsh-google-provider-button" disabled={!editable || !visible.length} onClick={() => select(visible.map(model => model.id), false)}>{t('clearShown')}</button>
         </div>
         <div className="dsh-google-provider-model-list">
-          {visible.map(model => <label key={model.id} className="dsh-google-provider-model">
-            <input type="checkbox" checked={selected.has(model.id)} disabled={!editable} data-google-model={model.id}
-              onChange={event => select([model.id], event.currentTarget.checked)}/>
-            <span className="dsh-google-provider-model-content"><span className="dsh-google-provider-model-name">{model.name ?? model.id}</span>
-              {model.name && model.name !== model.id && <span className="dsh-google-provider-model-id">{model.id}</span>}
-              {model.description && <span className="dsh-google-provider-model-id">{model.description}</span>}
-            </span>
-            {savedIds.has(model.id) && <span className="dsh-google-provider-model-badge">{t('savedModel')}</span>}
-          </label>)}
+          {visible.map(model => <div key={model.id} className="dsh-google-provider-model-entry">
+            <div className="dsh-google-provider-model-head"><label className="dsh-google-provider-model">
+              <input type="checkbox" checked={selected.has(model.id)} disabled={!editable} data-google-model={model.id}
+                onChange={event => select([model.id], event.currentTarget.checked)}/>
+              <span className="dsh-google-provider-model-content"><span className="dsh-google-provider-model-name">{model.name ?? model.id}</span>
+                {model.name && model.name !== model.id && <span className="dsh-google-provider-model-id">{model.id}</span>}
+                {model.description && <span className="dsh-google-provider-model-id">{model.description}</span>}
+              </span>
+              {savedIds.has(model.id) && <span className="dsh-google-provider-model-badge">{t('savedModel')}</span>}
+            </label>
+              <button type="button" className="dsh-google-provider-button dsh-google-provider-model-expand" data-google-model-expand={model.id}
+                aria-expanded={expandedModels.includes(model.id)} aria-label={`${t('advancedSettings')} ${model.name ?? model.id}`}
+                onClick={() => setExpandedModels(old => old.includes(model.id) ? old.filter(id => id !== model.id) : [...old, model.id])}>{t('advancedSettings')}</button>
+            </div>
+            {expandedModels.includes(model.id) && <ModelSettings model={model} draft={draft.modelEdits[model.id] ?? initialModelSettings(model)}
+              disabled={!editable} t={t} onChange={edit => patchDraft(old => ({ ...old, modelEdits: { ...old.modelEdits, [model.id]: edit } }))}/>}
+          </div>)}
           {!visible.length && <p className="dsh-google-provider-empty">{draft.models.length ? t('noMatches') : t('noModels')}</p>}
         </div>
         <div className="dsh-google-provider-manual">
@@ -272,9 +294,10 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
           }}>{t('add')}</button>
         </div>
         <p className="dsh-google-provider-hint">{t('modelsHint')}</p>
+        {!validModels && <p role="alert" className="dsh-google-provider-model-summary-error">{t('selectedModelsError')} {invalidModels.map(model => model.name ?? model.id).join(', ')}</p>}
       </section>
       <div className="dsh-google-provider-footer">
-        <button type="button" className="dsh-google-provider-button dsh-google-provider-primary" disabled={!editable || !dirty || !validTimeout} onClick={() => { void saveSettings() }}>{status === 'saving' ? t('saving') : t('save')}</button>
+        <button type="button" className="dsh-google-provider-button dsh-google-provider-primary" disabled={!editable || !dirty || !validTimeout || !validModels} onClick={() => { void saveSettings() }}>{status === 'saving' ? t('saving') : t('save')}</button>
         {dirty && <span className="dsh-google-provider-hint">{t('unsaved')}</span>}
         {(status === 'save-error' || status === 'credential-error' || status === 'conflict-error') && <button type="button" className="dsh-google-provider-button" onClick={() => setReload(value => value + 1)}>{t('retry')}</button>}
       </div>

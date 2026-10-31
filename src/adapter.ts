@@ -15,6 +15,7 @@ import { translateStream } from './stream.js'
 import { createNativeGoogleClient } from './client-factory.js'
 import { activeNativeToolChoices, applyNativeToolChoices, resolveCapabilities, unsupportedChoices } from './capabilities.js'
 import { latestChatChoices } from './request-controls.js'
+import { withoutRawModelOverrides } from './native-overrides.js'
 
 export interface GoogleAdapterOptions {
   profiles: () => Profiles
@@ -51,7 +52,8 @@ export class GoogleNativeAdapter extends LlmAdapter {
   private modelInfo(profile: GoogleProfile, id: string): LlmResolvedModelInfo {
     const model = profile.models.find(item => item.id === id)
     return {
-      provider: profile.provider, id, name: model?.name ?? id, inputModalities: ['text', 'image'],
+      provider: profile.provider, id, name: model?.name ?? id,
+      inputModalities: model?.inputTypes?.filter((type): type is 'text' | 'image' => type === 'text' || type === 'image') ?? ['text', 'image'],
       ...(model?.contextWindow ? { context: { contextWindow: model.contextWindow } } : {}),
       ...(model?.maxTokens ? { defaultMaxTokens: model.maxTokens } : {}),
       ...(model?.reasoning?.length ? { reasoning: {
@@ -107,7 +109,7 @@ export class GoogleNativeAdapter extends LlmAdapter {
       const model = profile.models.find(item => item.id === options.model)
       const config = buildGenerationConfig(profile, model, options)
       const { client, files } = boundConnection ?? await this.connection(profile)
-      const messages = await translateMessages(options, files)
+      const messages = await translateMessages(options, files, model?.inputTypes)
       if (messages.systemInstruction) config.systemInstruction = messages.systemInstruction
       const stream = await client.models.generateContentStream({ model: options.model, contents: messages.contents, config })
       yield* translateStream(stream, options, this.ctx.attachments)
@@ -134,13 +136,19 @@ export function buildGenerationConfig(profile: GoogleProfile, model: GoogleModel
     throw new LlmError('增量函数参数请通过 nativeGoogle SDK 服务读取；dsh 工具执行要求完整 JSON 参数。', 'UNSUPPORTED_PARAMETER')
   }
   if (options.temperature !== undefined) config.temperature = options.temperature
-  if (options.maxTokens !== undefined) config.maxOutputTokens = options.maxTokens
+  const maxTokens = options.maxTokens ?? model?.maxTokens
+  if (maxTokens !== undefined) config.maxOutputTokens = maxTokens
   if (options.stop !== undefined) config.stopSequences = [...options.stop]
   const effortId = options.reasoningEffort ?? model?.defaultReasoning
   const effort = model?.reasoning?.find(item => item.id === effortId)
   if (effortId && !effort) throw new LlmError('该模型未声明所选思考强度。', 'UNSUPPORTED_REASONING_EFFORT')
+  const thinkingConfig = { ...base.thinkingConfig, ...override.thinkingConfig }
+  // A model can switch the provider's thinking dialect. Retain unrelated
+  // settings such as includeThoughts while removing the other dialect.
+  if (override.thinkingConfig?.thinkingBudget !== undefined) delete thinkingConfig.thinkingLevel
+  if (override.thinkingConfig?.thinkingLevel !== undefined) delete thinkingConfig.thinkingBudget
   if (effort) {
-    config.thinkingConfig = { ...base.thinkingConfig, ...override.thinkingConfig }
+    config.thinkingConfig = thinkingConfig
     if (effort.thinkingBudget !== undefined) {
       delete config.thinkingConfig.thinkingLevel
       config.thinkingConfig.thinkingBudget = effort.thinkingBudget
@@ -151,8 +159,15 @@ export function buildGenerationConfig(profile: GoogleProfile, model: GoogleModel
     }
     if (effort.includeThoughts !== undefined) config.thinkingConfig.includeThoughts = effort.includeThoughts
   } else if (base.thinkingConfig || override.thinkingConfig) {
-    config.thinkingConfig = { ...base.thinkingConfig, ...override.thinkingConfig }
+    config.thinkingConfig = thinkingConfig
   }
+  config = withoutRawModelOverrides(config, {
+    output: override.responseModalities !== undefined,
+    maxTokens: maxTokens !== undefined,
+    thinkingMode: override.thinkingConfig?.thinkingBudget !== undefined || override.thinkingConfig?.thinkingLevel !== undefined
+      || effort?.thinkingBudget !== undefined || effort?.thinkingLevel !== undefined,
+    includeThoughts: override.thinkingConfig?.includeThoughts !== undefined || effort?.includeThoughts !== undefined,
+  })
   const tools: Tool[] = [...(config.tools as Tool[] ?? [])]
   const native = profile.nativeTools
   for (const [enabled, name] of [[native.search, 'googleSearch'], [native.urlContext, 'urlContext'],

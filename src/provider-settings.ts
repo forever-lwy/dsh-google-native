@@ -8,9 +8,10 @@ import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typer
 import type { z } from 'zod'
 import { DEFAULT_MODELS, GOOGLE_PROVIDERS, validateProfile, type GoogleModelConfig, type GoogleProfile, type Profiles } from './config.js'
 import { resolveCapabilities } from './capabilities.js'
+import { withoutRawModelOverrides } from './native-overrides.js'
 import {
   providerRemoteInfo, providerReadRequestSchema, providerDiscoverRequestSchema, providerSaveRequestSchema, providerDiscoverySchema,
-  type GoogleProviderConnection, type GoogleProviderModel, type GoogleProviderSettings,
+  type GoogleProviderConnection, type GoogleProviderModel, type GoogleProviderSettings, type GoogleModelAdvanced,
   type GoogleProviderReadRequest, type GoogleProviderDiscoverRequest, type GoogleProviderSaveRequest,
 } from './provider-remote.js'
 
@@ -41,6 +42,90 @@ function viewConnection(profile: GoogleProfile): GoogleProviderConnection {
 
 function canonicalModelId(id: string): string { return id.replace(/^(?:models|publishers\/google\/models)\/([^/]+)$/, '$1') }
 
+/** Only UI-owned fields cross the browser boundary; headers and opaque native options stay private. */
+function viewAdvanced(model: GoogleModelConfig): GoogleModelAdvanced | undefined {
+  const view: GoogleModelAdvanced = {}
+  for (const key of ['contextWindow', 'maxTokens', 'inputTypes', 'defaultReasoning'] as const) {
+    if (model[key] !== undefined) Object.assign(view, { [key]: structuredClone(model[key]) })
+  }
+  if (model.name?.trim()) view.name = model.name
+  if (model.reasoning !== undefined) view.reasoning = model.reasoning.map(effort => ({ id: effort.id, name: effort.name,
+    ...(effort.thinkingBudget === undefined ? {} : { thinkingBudget: effort.thinkingBudget }),
+    ...(effort.thinkingLevel === undefined ? {} : { thinkingLevel: effort.thinkingLevel }),
+    ...(effort.includeThoughts === undefined ? {} : { includeThoughts: effort.includeThoughts }),
+  }))
+  const config = model.generationConfig
+  // Legacy native defaults remain in place until this particular field is
+  // edited, but the model editor still needs to show their effective limit.
+  const nativeMaxTokens = config?.maxOutputTokens
+  if (view.maxTokens === undefined && typeof nativeMaxTokens === 'number' && Number.isSafeInteger(nativeMaxTokens) && nativeMaxTokens > 0) {
+    view.maxTokens = nativeMaxTokens
+  }
+  const outputs = config?.responseModalities
+  if (Array.isArray(outputs) && outputs.length > 0 && outputs.length <= 3
+    && outputs.every(type => ['TEXT', 'IMAGE', 'AUDIO'].includes(type)) && new Set(outputs).size === outputs.length) {
+    view.responseModalities = [...outputs] as NonNullable<GoogleModelAdvanced['responseModalities']>
+  }
+  if (config?.httpOptions?.timeout !== undefined) view.requestTimeoutMs = config.httpOptions.timeout
+  const thinking = config?.thinkingConfig
+  if (thinking) {
+    const fields: NonNullable<GoogleModelAdvanced['thinkingConfig']> = {}
+    if (typeof thinking.includeThoughts === 'boolean') fields.includeThoughts = thinking.includeThoughts
+    if (Number.isSafeInteger(thinking.thinkingBudget) && thinking.thinkingBudget! >= -1) fields.thinkingBudget = thinking.thinkingBudget
+    if (typeof thinking.thinkingLevel === 'string' && thinking.thinkingLevel.trim().length > 0 && thinking.thinkingLevel.length <= 64) fields.thinkingLevel = thinking.thinkingLevel
+    if (Object.keys(fields).length) view.thinkingConfig = fields
+  }
+  return Object.keys(view).length ? view : undefined
+}
+
+function applyAdvanced(model: GoogleModelConfig, patch: GoogleModelAdvanced): GoogleModelConfig {
+  const result = structuredClone(model)
+  for (const key of ['name', 'contextWindow', 'maxTokens', 'inputTypes', 'reasoning', 'defaultReasoning'] as const) {
+    const value = patch[key]
+    if (value === undefined) continue
+    if (value === null) delete result[key]
+    else Object.assign(result, { [key]: structuredClone(value) })
+  }
+  let generation = structuredClone(result.generationConfig ?? {})
+  // The visible output limit owns the native SDK equivalent as well. Clearing
+  // the visible override must not resurrect an older hidden model-only limit.
+  if (patch.maxTokens !== undefined) delete generation.maxOutputTokens
+  if (patch.responseModalities !== undefined) {
+    if (patch.responseModalities === null) delete generation.responseModalities
+    else generation.responseModalities = [...patch.responseModalities]
+  }
+  if (patch.requestTimeoutMs !== undefined) {
+    const http = { ...generation.httpOptions }
+    if (patch.requestTimeoutMs === null) delete http.timeout
+    else http.timeout = patch.requestTimeoutMs
+    if (Object.keys(http).length) generation.httpOptions = http
+    else delete generation.httpOptions
+  }
+  if (patch.thinkingConfig !== undefined) {
+    const thinking = { ...generation.thinkingConfig }
+    for (const key of ['includeThoughts', 'thinkingBudget', 'thinkingLevel'] as const) {
+      const value = patch.thinkingConfig === null ? null : patch.thinkingConfig[key]
+      if (value === undefined) continue
+      if (value === null) delete thinking[key]
+      else Object.assign(thinking, { [key]: value })
+    }
+    // A selected native thinking format replaces only its mutually exclusive peer.
+    if (patch.thinkingConfig?.thinkingBudget != null) delete thinking.thinkingLevel
+    if (patch.thinkingConfig?.thinkingLevel != null) delete thinking.thinkingBudget
+    if (Object.keys(thinking).length) generation.thinkingConfig = thinking
+    else delete generation.thinkingConfig
+  }
+  generation = withoutRawModelOverrides(generation, {
+    output: patch.responseModalities !== undefined,
+    maxTokens: patch.maxTokens !== undefined,
+    thinkingMode: patch.thinkingConfig === null || patch.thinkingConfig?.thinkingBudget !== undefined
+      || patch.thinkingConfig?.thinkingLevel !== undefined,
+    includeThoughts: patch.thinkingConfig === null || patch.thinkingConfig?.includeThoughts !== undefined,
+  })
+  if (result.generationConfig !== undefined || Object.keys(generation).length) result.generationConfig = generation
+  return result
+}
+
 /** Retain user-authored advanced model options; newly discovered known IDs inherit their exact preset. */
 function selectedModels(profile: GoogleProfile, input: GoogleProviderModel[]): GoogleModelConfig[] {
   const ids = new Set<string>()
@@ -50,15 +135,15 @@ function selectedModels(profile: GoogleProfile, input: GoogleProviderModel[]): G
     ids.add(canonical)
     const existing = profile.models.find(model => canonicalModelId(model.id) === canonical)
     const preset = DEFAULT_MODELS.find(model => model.id === canonical)
-    if (existing) return { ...structuredClone(existing), id: item.id,
-      ...(preset && item.id !== canonical && existing.capabilities === undefined ? { capabilities: resolveCapabilities(profile.provider, preset) } : {}) }
-    return {
+    const result: GoogleModelConfig = existing ? { ...structuredClone(existing), id: item.id,
+      ...(preset && item.id !== canonical && existing.capabilities === undefined ? { capabilities: resolveCapabilities(profile.provider, preset) } : {}) } : {
       ...(preset ? structuredClone(preset) : {}), id: item.id,
       ...(item.name === undefined ? {} : { name: item.name }),
       ...(item.contextWindow === undefined ? {} : { contextWindow: item.contextWindow }),
       ...(item.maxTokens === undefined ? {} : { maxTokens: item.maxTokens }),
       ...(preset && canonical !== item.id ? { capabilities: resolveCapabilities(profile.provider, preset) } : {}),
     }
+    return item.advanced === undefined ? result : applyAdvanced(result, item.advanced)
   })
 }
 
@@ -111,11 +196,15 @@ export class GoogleProviderSettingsService extends TypertRemoteService {
     const views = await Promise.all(GOOGLE_PROVIDERS.map(async provider => {
       const profile = profiles[provider]
       return { provider, connection: viewConnection(profile), credential: await this.credentialInfo(profile),
-        models: profile.models.map(model => ({ id: model.id,
-          ...(model.name === undefined ? {} : { name: model.name }),
-          ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
-          ...(model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens }),
-        })) }
+        models: profile.models.map(model => {
+          const advanced = viewAdvanced(model)
+          return { id: model.id,
+            ...(model.name === undefined ? {} : { name: model.name }),
+            ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
+            ...(model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens }),
+            ...(advanced === undefined ? {} : { advanced }),
+          }
+        }) }
     }))
     signal.throwIfAborted()
     return { settingsNs: this.options.settingsNs, revision: descriptor.revision, writable: this.ctx.settings.writable, profiles: views }
@@ -134,7 +223,7 @@ export class GoogleProviderSettingsService extends TypertRemoteService {
       return validateProfile(provider, draft)
     } catch (error) {
       if (error instanceof RemoteError) throw error
-      throw new RemoteError('gateway/bad-request', 'Google 连接配置无效，请检查 Base URL、凭据引用与文件路径。', {})
+      throw new RemoteError('gateway/bad-request', 'Google 连接或模型参数无效，请检查地址、容量、思考设置与超时。', {})
     }
   }
 

@@ -7,7 +7,7 @@ import { TypertGatewayService } from '@deepseek-ai/dsh-api-gateway'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import { defaultProfile, validateProfile } from '../lib/config.js'
 import { registerGoogleProviderSettings } from '../lib/provider-settings.js'
-import { providerRemoteInfo, ProviderSettingsRemoteError, saveProviderSettings } from '../lib/provider-remote.js'
+import { providerRemoteInfo, providerSettingsSchema, ProviderSettingsRemoteError, saveProviderSettings } from '../lib/provider-remote.js'
 import { chatRemoteInfo } from '../lib/chat-remote.js'
 
 const studio = 'google-ai-studio'
@@ -237,7 +237,8 @@ test('provider timeouts read and save the existing SDK option without changing a
   const before = await f.service.get({}, signal())
   assert.equal(before.profiles[0].connection.requestTimeoutMs, 1850)
   assert.equal(before.profiles[1].connection.requestTimeoutMs, undefined)
-  assert.doesNotMatch(JSON.stringify(before), /never-return-this-header|custom|4500/)
+  assert.doesNotMatch(JSON.stringify(before), /never-return-this-header|custom/)
+  assert.equal(before.profiles[0].models[0].advanced.requestTimeoutMs, 4500)
   const saved = await f.service.save({ provider: studio,
     connection: { ...before.profiles[0].connection, requestTimeoutMs: 600000 },
     models: before.profiles[0].models, expectedRevision: before.revision,
@@ -289,5 +290,234 @@ test('advanced profile and per-model SDK timeouts are validated against Node tim
       target.generationConfig = { httpOptions: { timeout: value } }
       assert.equal(validateProfile(provider, profile).provider, provider)
     }
+  }
+})
+
+test('model advanced settings read only safe fields and persist explicit patches without replacing private native options', async () => {
+  const f = fixture()
+  const old = f.profiles[studio].models[0]
+  old.generationConfig = {
+    temperature: 0.3, topP: 0.7, cachedContent: 'private-cache-resource',
+    httpOptions: { timeout: 5000, headers: { authorization: 'private-model-header' }, extraBody: { vendor: 'private-vendor-extension' } },
+    thinkingConfig: { includeThoughts: true, privateExtension: 'private-thinking-extension' },
+  }
+  old.capabilities = { search: false, nativeFiles: true }
+  const originalCapabilities = structuredClone(old.capabilities)
+  const vertexOriginal = structuredClone(f.profiles[vertex])
+  const before = await f.service.get({}, signal())
+  assert.equal(before.profiles[0].models[0].advanced.requestTimeoutMs, 5000)
+  assert.equal(before.profiles[0].models[0].advanced.thinkingConfig.includeThoughts, true)
+  assert.doesNotMatch(JSON.stringify(before), /private-cache-resource|private-model-header|private-vendor-extension|private-thinking-extension|temperature|topP/)
+  const advanced = {
+    name: 'Edited Flash', contextWindow: 65536, maxTokens: 8192,
+    inputTypes: ['text', 'image', 'pdf'], responseModalities: ['TEXT', 'IMAGE'], requestTimeoutMs: 120000,
+    reasoning: [{ id: 'economy', name: 'Economy thinking', thinkingBudget: 1024 }, { id: 'deep', name: 'Deep thinking', thinkingBudget: 8192 }],
+    defaultReasoning: 'economy', thinkingConfig: { includeThoughts: false },
+  }
+  const result = await f.service.save({ provider: studio, connection: f.connection(studio),
+    models: [{ id: old.id, name: 'discovery-name-must-not-win', advanced }], expectedRevision: 4,
+  }, signal())
+  const saved = f.profiles[studio].models[0]
+  assert.equal(saved.name, advanced.name)
+  assert.equal(saved.contextWindow, 65536)
+  assert.equal(saved.maxTokens, 8192)
+  assert.deepEqual(saved.inputTypes, advanced.inputTypes)
+  assert.deepEqual(saved.reasoning, advanced.reasoning)
+  assert.equal(saved.defaultReasoning, 'economy')
+  assert.equal(saved.generationConfig.httpOptions.timeout, 120000)
+  assert.deepEqual(saved.generationConfig.responseModalities, advanced.responseModalities)
+  assert.equal(saved.generationConfig.thinkingConfig.includeThoughts, false)
+  assert.equal(saved.generationConfig.thinkingConfig.privateExtension, 'private-thinking-extension')
+  assert.deepEqual(saved.generationConfig.httpOptions.headers, { authorization: 'private-model-header' })
+  assert.equal(saved.generationConfig.httpOptions.extraBody.vendor, 'private-vendor-extension')
+  assert.equal(saved.generationConfig.topP, 0.7)
+  assert.equal(saved.generationConfig.cachedContent, 'private-cache-resource')
+  assert.deepEqual(saved.capabilities, originalCapabilities)
+  assert.deepEqual(f.profiles[vertex], vertexOriginal)
+  assert.deepEqual(result.profiles[0].models[0].advanced, advanced)
+  assert.doesNotMatch(JSON.stringify(result), /private-model-header|private-vendor-extension|private-thinking-extension|private-cache-resource/)
+})
+
+test('null advanced patches clear only their own fields and old clients retain the complete model configuration', async () => {
+  const f = fixture()
+  const old = f.profiles[studio].models[0]
+  old.maxTokens = 2048
+  old.defaultReasoning = 'low'
+  old.inputTypes = ['text', 'image']
+  old.generationConfig = { topP: 0.7, responseModalities: ['TEXT'], httpOptions: { timeout: 1000, headers: { vendor: 'retain' } },
+    thinkingConfig: { thinkingBudget: 2048, includeThoughts: true, opaque: 'retain-private' } }
+  const original = structuredClone(old)
+  await f.service.save({ provider: studio, connection: f.connection(studio),
+    models: [{ id: old.id, name: 'unadopted-upstream-name', contextWindow: 2000, maxTokens: 1000 }], expectedRevision: 4,
+  }, signal())
+  assert.deepEqual(f.profiles[studio].models[0], original)
+  await f.service.save({ provider: studio, connection: f.connection(studio), models: [{ id: old.id, advanced: {
+    name: null, contextWindow: null, maxTokens: null, inputTypes: null,
+    responseModalities: null, requestTimeoutMs: null, reasoning: null, defaultReasoning: null, thinkingConfig: null,
+  } }], expectedRevision: 5 }, signal())
+  const cleared = f.profiles[studio].models[0]
+  for (const key of ['name', 'contextWindow', 'maxTokens', 'inputTypes', 'reasoning', 'defaultReasoning']) assert.equal(cleared[key], undefined)
+  assert.deepEqual(cleared.generationConfig, { topP: 0.7, httpOptions: { headers: { vendor: 'retain' } }, thinkingConfig: { opaque: 'retain-private' } })
+})
+
+test('native thinking format changes replace only the opposite known field and legacy unknown values stay editable', async () => {
+  const f = fixture()
+  const model = f.profiles[studio].models[0]
+  model.generationConfig = { responseModalities: ['FUTURE_NATIVE_MODALITY'],
+    thinkingConfig: { thinkingBudget: null, thinkingLevel: null, opaque: 'private-thinking' } }
+  const before = await f.service.get({}, signal())
+  assert.equal(before.profiles[0].models[0].advanced.responseModalities, undefined)
+  assert.equal(before.profiles[0].models[0].advanced.thinkingConfig, undefined)
+  await f.service.save({ provider: studio, connection: f.connection(studio), models: [{ id: model.id,
+    advanced: { name: 'Editable legacy model' } }], expectedRevision: 4 }, signal())
+  assert.deepEqual(f.profiles[studio].models[0].generationConfig, model.generationConfig)
+  await f.service.save({ provider: studio, connection: f.connection(studio), models: [{ id: model.id,
+    advanced: { thinkingConfig: { thinkingLevel: 'HIGH' } } }], expectedRevision: 5 }, signal())
+  assert.deepEqual(f.profiles[studio].models[0].generationConfig.thinkingConfig, { thinkingLevel: 'HIGH', opaque: 'private-thinking' })
+  await f.service.save({ provider: studio, connection: f.connection(studio), models: [{ id: model.id,
+    advanced: { thinkingConfig: { thinkingBudget: -1 } } }], expectedRevision: 6 }, signal())
+  assert.deepEqual(f.profiles[studio].models[0].generationConfig.thinkingConfig, { thinkingBudget: -1, opaque: 'private-thinking' })
+})
+
+test('invalid advanced model patches are rejected before configuration or credentials are written', async () => {
+  const invalid = [
+    { contextWindow: 0 }, { maxTokens: 1.5 }, { contextWindow: 1024, maxTokens: 1024 },
+    { inputTypes: ['image'] }, { inputTypes: ['text', 'image', 'image'] },
+    { responseModalities: ['VIDEO'] }, { responseModalities: ['TEXT', 'TEXT'] },
+    { thinkingConfig: { thinkingBudget: 10, thinkingLevel: 'HIGH' } },
+    { reasoning: [{ id: 'same', name: 'A', thinkingBudget: 10 }, { id: 'same', name: 'B', thinkingBudget: 20 }] },
+    { reasoning: [{ id: 'empty', name: 'A', thinkingBudget: 10 }], defaultReasoning: 'missing' },
+    { reasoning: null, defaultReasoning: 'high' }, { requestTimeoutMs: -1 },
+    { generationConfig: { httpOptions: { headers: { secret: 'not-accepted' } } } },
+  ]
+  for (const advanced of invalid) {
+    const f = fixture()
+    await assert.rejects(f.service.save({ provider: studio, connection: f.connection(studio),
+      models: [{ id: f.profiles[studio].models[0].id, advanced }], expectedRevision: 4,
+      apiKey: 'must-not-be-written',
+    }, signal()), error => error.code === 'gateway/bad-request')
+    assert.equal(f.operations.length, 0)
+    assert.equal(f.writes.length, 0)
+  }
+  const f = fixture()
+  f.profiles[studio].models[0].maxTokens = 1024
+  await assert.rejects(f.service.save({ provider: studio, connection: f.connection(studio),
+    models: [{ id: f.profiles[studio].models[0].id, advanced: { contextWindow: 1024 } }], expectedRevision: 4,
+  }, signal()), error => error.code === 'gateway/bad-request', 'merged existing capacities are checked too')
+})
+
+test('raw model configuration validates capacities, native input declarations and reasoning without rejecting future native payload fields', () => {
+  for (const provider of [studio, vertex]) {
+    const profile = defaultProfile(provider)
+    const original = profile.models[0]
+    const invalid = [
+      { contextWindow: 0 }, { contextWindow: 0.5 }, { maxTokens: Number.MAX_SAFE_INTEGER + 1 },
+      { contextWindow: 1024, maxTokens: 1024 }, { inputTypes: [] }, { inputTypes: ['pdf'] },
+      { inputTypes: ['text', 'video', 'video'] }, { inputTypes: ['text', 'future'] },
+      { reasoning: [{ id: 'same', name: 'a' }, { id: 'same', name: 'b' }], defaultReasoning: 'same' },
+      { reasoning: [{ id: 'bad', name: 'bad', thinkingBudget: 1.25 }], defaultReasoning: 'bad' },
+      { reasoning: [{ id: 'bad', name: 'bad', thinkingBudget: 1024, thinkingLevel: 'HIGH' }], defaultReasoning: 'bad' },
+    ]
+    for (const patch of invalid) {
+      assert.throws(() => validateProfile(provider, { ...profile, models: [{ ...original, ...patch }] }),
+        /./, `${provider}: ${JSON.stringify(patch)}`)
+    }
+    const nativeUnknowns = { responseModalities: ['FUTURE_NATIVE_OUTPUT'], thinkingConfig: {
+      thinkingBudget: null, thinkingLevel: null, futureOption: { retained: true },
+    } }
+    assert.doesNotThrow(() => validateProfile(provider, { ...profile, models: [{ ...original, generationConfig: nativeUnknowns }] }))
+  }
+})
+
+test('explicit advanced clears remove stale model SDK and raw REST aliases while retaining provider defaults and private adjacent options', async () => {
+  const f = fixture()
+  const model = f.profiles[studio].models[0]
+  model.maxTokens = 512
+  model.generationConfig = { temperature: 0.2, maxOutputTokens: 256, responseModalities: ['IMAGE'],
+    thinkingConfig: { thinkingBudget: 1024, includeThoughts: true, futureThinking: 'retain' },
+    httpOptions: { headers: { 'x-private': 'retain' }, extraBody: { cachedContent: 'retain-cache',
+      generationConfig: { responseModalities: ['AUDIO'], maxOutputTokens: 128,
+        thinkingConfig: { thinkingBudget: 2048, includeThoughts: true, privateThinking: 'retain-thinking' },
+        temperature: 0.8 },
+      generation_config: { response_modalities: ['IMAGE'], max_output_tokens: 64,
+        thinking_config: { thinking_level: 'HIGH', include_thoughts: false, extra_thinking: 'retain-extra' },
+        top_k: 5 },
+    } } }
+  f.profiles[studio].generationConfig.httpOptions = { extraBody: {
+    generationConfig: { responseModalities: ['TEXT'], maxOutputTokens: 8000,
+      thinkingConfig: { thinkingBudget: 8192, includeThoughts: true } },
+  } }
+  const providerDefault = structuredClone(f.profiles[studio].generationConfig)
+  await f.service.save({ provider: studio, connection: f.connection(studio),
+    models: [{ id: model.id, advanced: { maxTokens: null, responseModalities: null, thinkingConfig: null } }], expectedRevision: 4,
+  }, signal())
+  const saved = f.profiles[studio].models[0]
+  assert.equal(saved.maxTokens, undefined)
+  assert.equal(saved.generationConfig.maxOutputTokens, undefined)
+  assert.equal(saved.generationConfig.responseModalities, undefined)
+  assert.deepEqual(saved.generationConfig.thinkingConfig, { futureThinking: 'retain' })
+  assert.equal(saved.generationConfig.temperature, 0.2)
+  assert.deepEqual(saved.generationConfig.httpOptions.headers, { 'x-private': 'retain' })
+  assert.deepEqual(saved.generationConfig.httpOptions.extraBody, {
+    cachedContent: 'retain-cache', generationConfig: { temperature: 0.8, top_k: 5,
+      thinkingConfig: { privateThinking: 'retain-thinking', extra_thinking: 'retain-extra' } },
+  })
+  assert.deepEqual(f.profiles[studio].generationConfig, providerDefault)
+})
+
+test('native model output defaults are visible without promotion and survive unrelated edits until explicitly cleared', async () => {
+  for (const provider of [studio, vertex]) {
+    const f = fixture()
+    const model = f.profiles[provider].models[0]
+    delete model.maxTokens
+    model.generationConfig = { maxOutputTokens: 2048, topP: 0.4, httpOptions: {
+      headers: { 'x-private': 'retain' }, extraBody: { generationConfig: { max_output_tokens: 1024, temperature: 0.6 } },
+    } }
+    const original = structuredClone(model)
+    const snapshot = await f.service.get({}, signal())
+    const view = snapshot.profiles.find(profile => profile.provider === provider).models[0]
+    assert.equal(view.advanced.maxTokens, 2048)
+    assert.equal(view.maxTokens, undefined, 'legacy native output limits do not change outer catalog metadata')
+    assert.deepEqual(model, original, 'reading never promotes native defaults into model metadata')
+    assert.equal(f.operations.length, 0)
+    await f.service.save({ provider, connection: f.connection(provider),
+      models: [{ id: model.id, advanced: { name: 'Edited name' } }], expectedRevision: 4,
+    }, signal())
+    assert.deepEqual(f.profiles[provider].models[0].generationConfig, original.generationConfig)
+    assert.equal(f.profiles[provider].models[0].maxTokens, undefined)
+    const cleared = await f.service.save({ provider, connection: f.connection(provider),
+      models: [{ id: model.id, advanced: { maxTokens: null } }], expectedRevision: 5,
+    }, signal())
+    const saved = f.profiles[provider].models[0]
+    assert.equal(saved.maxTokens, undefined)
+    assert.equal(saved.generationConfig.maxOutputTokens, undefined)
+    assert.deepEqual(saved.generationConfig.httpOptions.extraBody, { generationConfig: { temperature: 0.6 } })
+    assert.deepEqual(saved.generationConfig.httpOptions.headers, { 'x-private': 'retain' })
+    assert.equal(saved.generationConfig.topP, 0.4)
+    assert.equal(cleared.profiles.find(profile => profile.provider === provider).models[0].advanced.maxTokens, undefined)
+  }
+})
+
+test('legacy native output limits above a declared context remain readable while invalid explicit saves are rejected before writes', async () => {
+  for (const provider of [studio, vertex]) {
+    const f = fixture()
+    const model = f.profiles[provider].models[0]
+    model.contextWindow = 1024
+    delete model.maxTokens
+    model.generationConfig = { maxOutputTokens: 2048 }
+    const original = structuredClone(f.profiles[provider])
+    const snapshot = await f.service.get({}, signal())
+    assert.doesNotThrow(() => providerSettingsSchema.parse(snapshot))
+    const view = snapshot.profiles.find(profile => profile.provider === provider).models[0]
+    assert.equal(view.advanced.maxTokens, 2048)
+    assert.equal(view.contextWindow, 1024)
+    assert.deepEqual(f.profiles[provider], original)
+    await assert.rejects(f.service.save({ provider, connection: f.connection(provider),
+      models: [{ id: model.id, advanced: { maxTokens: 1024 } }], expectedRevision: 4,
+      apiKey: 'must-not-write-this-key',
+    }, signal()), error => error.code === 'gateway/bad-request')
+    assert.equal(f.operations.length, 0)
+    assert.equal(f.writes.length, 0)
+    assert.deepEqual(f.profiles[provider], original)
   }
 })

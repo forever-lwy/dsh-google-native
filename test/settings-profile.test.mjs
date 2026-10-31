@@ -77,3 +77,54 @@ test('real profile persists SDK deadlines from provider cards and retains per-mo
   assert.match(stored, /timeout: 600000/)
   assert.match(stored, /timeout: 0/)
 })
+
+test('real profile model advanced settings survive persistence and drive exact model metadata and native generation options', async t => {
+  const { ctx, dir } = await realSettingsProfile(t, { config: {
+    aiStudio: { models: [{ id: 'custom-advanced', name: 'Before edit', generationConfig: {
+      topP: 0.8, httpOptions: { headers: { 'x-private': 'never-expose-this-value' } },
+    } }] },
+  } })
+  const entry = ctx.configEditor.entries().find(item => item.options.id === 'dsh-google-native')
+  const fiber = entry.fiber
+  let snapshot = await ctx.nativeGoogleSettings.get({}, signal())
+  for (const provider of ['google-ai-studio', 'google-vertex-native']) {
+    const before = snapshot.profiles.find(profile => profile.provider === provider)
+    const chosen = provider === 'google-ai-studio' ? 'custom-advanced' : before.models[0].id
+    snapshot = await ctx.nativeGoogleSettings.save({ provider, connection: before.connection,
+      models: [{ id: chosen, advanced: {
+        name: `${provider} edited`, contextWindow: 65536, maxTokens: 4096,
+        inputTypes: ['text', 'image', 'pdf'], responseModalities: ['TEXT'], requestTimeoutMs: 45000,
+        reasoning: [{ id: 'custom-low', name: 'Custom low', thinkingBudget: 1024 }],
+        defaultReasoning: 'custom-low', thinkingConfig: { includeThoughts: false },
+      } }], expectedRevision: snapshot.revision,
+    }, signal())
+    const view = snapshot.profiles.find(profile => profile.provider === provider).models[0]
+    assert.equal(view.advanced.maxTokens, 4096)
+    assert.equal(view.advanced.defaultReasoning, 'custom-low')
+    const info = await ctx.llm.resolveModelInfo(provider, chosen)
+    assert.equal(info.name, `${provider} edited`)
+    assert.equal(info.context.contextWindow, 65536)
+    assert.equal(info.defaultMaxTokens, 4096)
+    assert.deepEqual(info.inputModalities, ['text', 'image'])
+    assert.equal(info.reasoning.defaultEffort, 'custom-low')
+    const call = await ctx.llm.resolveCallConfig({ provider, model: chosen })
+    assert.equal(call.maxTokens, 4096)
+    assert.equal(call.reasoningEffort, 'custom-low')
+    const profile = profilesOf(fiber.config)[provider]
+    const options = buildGenerationConfig(profile, profile.models[0], { ...call, messages: [] })
+    assert.equal(options.maxOutputTokens, 4096)
+    assert.deepEqual(options.responseModalities, ['TEXT'])
+    assert.equal(options.httpOptions.timeout, 45000)
+    assert.deepEqual(options.thinkingConfig, { includeThoughts: false, thinkingBudget: 1024 })
+  }
+  assert.equal(entry.fiber, fiber)
+  const persisted = await readFile(join(dir, 'cordis.patch.yml'), 'utf8')
+  assert.match(persisted, /contextWindow: 65536/)
+  assert.match(persisted, /maxTokens: 4096/)
+  assert.match(persisted, /inputTypes:/)
+  assert.match(persisted, /responseModalities:/)
+  const profile = profilesOf(fiber.config)['google-ai-studio']
+  assert.equal(profile.models[0].generationConfig.topP, 0.8)
+  assert.deepEqual(profile.models[0].generationConfig.httpOptions.headers, { 'x-private': 'never-expose-this-value' })
+  assert.doesNotMatch(JSON.stringify(snapshot), /never-expose-this-value/)
+})

@@ -1,0 +1,43 @@
+# 与现有 id 条目合并；models 是整个模型列表，请保留仍需使用的其他模型。
+# 界面入口：设置 → 模型 → 对应 Google 提供商 → 配置 Google 提供商 → 模型高级设置。
+# 下面的容量和档位只是配置示例；真实 API、模型和账号限制仍然适用。
+- id: dsh-google-native
+  config:
+    aiStudio:
+      models:
+        - id: gemini-2.5-flash
+          name: Gemini 2.5 Flash
+          contextWindow: 1048576
+          maxTokens: 32768
+          inputTypes: [text, image, audio, video, pdf]
+          reasoning:
+            - id: dynamic
+              name: 动态思考
+              thinkingBudget: -1
+            - id: low
+              name: 低
+              thinkingBudget: 1024
+          defaultReasoning: dynamic
+          generationConfig:
+            responseModalities: [TEXT]
+            thinkingConfig:
+              includeThoughts: true
+            httpOptions:
+              timeout: 600000
+        - id: gemini-3.8-flash
+          name: Gemini 3.8 Flash
+          contextWindow: 1048576
+          maxTokens: 32768
+          inputTypes: [text, image, audio, video, pdf]
+          reasoning:
+            - id: low
+              name: 低
+              thinkingLevel: LOW
+            - id: high
+              name: 高
+              thinkingLevel: HIGH
+          defaultReasoning: low
+          generationConfig:
+            responseModalities: [TEXT]
+            thinkingConfig:
+              includeThoughts: true

@@ -1,8 +1,8 @@
 # Google 原生供应商插件
 
-`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。待安装版本 `0.1.4` 针对 dsh `0.2.1-rc.5`，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
+`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。待安装版本 `0.1.5` 针对 dsh `0.2.1-rc.5`，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
 
-`0.1.4` 修复自定义网络传输未关闭底层默认 5 分钟计时的问题，并在 **设置 → 模型 → 对应 Google 提供商 → 配置 Google 提供商** 中加入 **模型请求超时（秒）**。两套后端分别保存，`0` 表示不额外设置本地请求总时限。该页面还可修改 Base URL、认证与凭据，并获取上游模型列表后勾选加入。聊天输入框继续提供“原生能力”菜单，位于文件上传按钮旁，可选择新上传文件的原生输入方式，以及当前模型支持的 Google 搜索、URL 上下文、代码执行和 Google 地图。
+`0.1.5` 在 **设置 → 模型 → 对应 Google 提供商 → 配置 Google 提供商** 的模型列表中加入逐模型高级设置，可编辑显示名称、上下文长度、最大输出 tokens、原生输入/输出类型、思考档位、思考摘要及单独的请求超时。功能只作用于本插件的 AI Studio、Vertex 两套后端。供应商连接、模型发现和超时设置继续保留；聊天输入框继续提供文件和原生工具选项。
 
 ## 能力范围
 
@@ -29,7 +29,7 @@ npm pack --pack-destination ../releases
 在 dsh 的“插件 → 添加插件”中输入下面的**容器路径**，由用户确认安装和启用：
 
 ```text
-/plugins/releases/dsh-google-native-0.1.4.tgz
+/plugins/releases/dsh-google-native-0.1.5.tgz
 ```
 
 不要使用 `link:` 将源码连接到日常 `web` profile。下一次测试应提升版本并生成新文件名。现有 HMR 可以应用用户主动安装的版本；只有界面明确提示 `restart-required` 才需要安排重启。dsh `0.2.1-rc.5` 普通“已安装”页面没有第三方插件通用更新按钮，不能将较新上游界面的行为视为已具备。
@@ -40,7 +40,7 @@ Git 来源发布需要固定完整 commit SHA，市场记录也应引用该 SHA�
 
 插件注册两个供应商路由：`google-ai-studio`、`google-vertex-native`。两套配置分别位于 `aiStudio` 和 `vertex`，可同时启用。默认模型目录包含 Gemini 2.5 Flash / Pro、Gemini 3.8 Flash 和 Gemini 4 Argon；该目录是配置候选，不是针对当前账号或地区的可用性探测。可在模型页的对应提供商卡片中获取上游模型并选择要加入的项目，也可手动填写模型 ID。保存后，在聊天模型选择器选择对应供应商和模型。
 
-在 **设置 → 模型** 中找到 **Google AI Studio（原生）** 或 **Google Vertex AI（原生）** 提供商，点击其卡片内的 **配置 Google 提供商**，即可直接保存该提供商的连接和模型目录。页面通过 dsh `0.2.1-rc.5` 的公开提供商卡片插槽接入；无需进入插件详情页。高级生成参数、思考档位和自定义能力声明仍可使用原生配置编辑器或下列 YAML 示例。安装的 bundle 创建 ID 为 `dsh-google-native` 的插件条目；示例以 `- id: dsh-google-native` 覆盖该条目的配置，可合并到相应 profile 的 `cordis.patch.yml`，不要覆盖整个文件，也不要改成仅有 `name` 的新条目。
+在 **设置 → 模型** 中找到 **Google AI Studio（原生）** 或 **Google Vertex AI（原生）** 提供商，点击其卡片内的 **配置 Google 提供商**，即可直接保存该提供商的连接和模型目录，并展开每个模型的高级设置。页面通过 dsh `0.2.1-rc.5` 的公开提供商卡片插槽接入；无需进入插件详情页。完整的原生生成参数和自定义工具能力声明仍可使用原生配置编辑器或下列 YAML 示例。安装的 bundle 创建 ID 为 `dsh-google-native` 的插件条目；示例以 `- id: dsh-google-native` 覆盖该条目的配置，可合并到相应 profile 的 `cordis.patch.yml`，不要覆盖整个文件，也不要改成仅有 `name` 的新条目。
 
 配置后，模型选择器可以选择本插件公布的模型。当前宿主的 Models 页可能将未使用 API key 的 Vertex ADC 显示为缺少凭据；该就绪提示不阻止模型选择或实际调用。
 
@@ -50,6 +50,7 @@ Git 来源发布需要固定完整 commit SHA，市场记录也应引用该 SHA�
 | [Vertex ADC](examples/vertex-adc.yaml) | project/location 加 ADC 或服务账号文件 |
 | [Vertex Express](examples/vertex-express.yaml) | `GOOGLE_VERTEX_API_KEY`；不设置 project/location/keyFile |
 | [自定义连接地址](examples/ui-connection.yaml) | Base URL、API 版本和两种后端的配置字段；常用连接设置也可直接在 UI 编辑 |
+| [逐模型高级设置](examples/model-settings.yaml) | 上下文、最大输出 tokens、输入类型、原生响应类型、思考档位与模型级超时 |
 | [原生参数与思考档位](examples/native-parameters.yaml) | 模型目录、thinkingLevel、搜索和 URL Context |
 | [聊天能力声明](examples/chat-capabilities.yaml) | 为自定义模型声明可显示的原生选项，或隐藏个别选项 |
 
@@ -66,12 +67,33 @@ Docker 进程只能读取传入容器的环境变量。宿主机 shell 中 `expo
 1. 当前卡片只配置对应的 **AI Studio** 或 **Vertex AI**。两套连接分别保存；Vertex 可以选择 ADC 或 Express API Key。ADC 填写项目、区域，以及可选的容器内服务账号文件路径。
 2. 填写 **Base URL**、可选的 **API 版本**及 **模型请求超时（秒）**。Base URL 留空使用 Google 官方地址。超时填 `600` 表示一次聊天模型请求最多等待 10 分钟，填 `0` 表示不额外设置本地总时限。API Key 模式可以填写已有的凭据引用，或在“新的 API Key”中输入新密钥；该输入框不会回显已保存的密钥，留空表示保留现有凭据。
 3. 点击 **获取上游模型**。请求使用当前页面尚未保存的连接地址、认证方式和新输入的密钥；它只读取模型元数据，不保存连接、不自动加入模型，也不进行模型生成。
-4. 筛选模型后勾选要加入聊天选择器的项目，可使用“全选当前结果”或“取消当前结果”。如果上游未提供原生列表、权限不足或列表为空，可在下方手动添加模型 ID。
-5. 点击 **保存供应商设置**，才会更新当前供应商连接和模型目录。只保留选中的模型；未勾选项目会在保存时从该目录移除。已加入模型的思考配置、能力声明及其他高级参数会保留；新增的内置已知模型采用对应预设。
+4. 筛选模型后勾选要加入聊天选择器的项目，可使用“全选当前结果”或“取消当前结果”。如果上游未提供原生列表、权限不足或列表为空，可在下方手动添加模型 ID。展开某个模型的高级设置可以调整该模型的参数。
+5. 点击 **保存供应商设置**，才会更新当前供应商连接、选中的模型目录及模型参数。只保留选中的模型；未勾选项目会在保存时从该目录移除。未编辑的高级参数和自定义能力声明会保留；新增的内置已知模型采用对应预设。
 
 获取上游列表不会抹掉已经选择或保存、但未被本次列表返回的模型。收起卡片会保留当前页面内的草稿；只有保存才会应用该提供商的修改。离开模型页前请完成需要保留的保存操作。若另一张卡片或窗口先保存了配置，过期草稿会提示冲突，保留输入并读取新的修订号，由用户再次保存。
 
 API Key 由 dsh 凭据存储保存，插件配置只记录引用名称。UI 仅显示是否已配置，不读取密钥明文。凭据存储不可写时，可以使用已有引用或 ADC；若保存结果提示“连接与模型已保存，但 API Key 保存失败”，需要重新读取配置并再次输入、保存密钥。
+
+### 每个模型的高级设置
+
+在模型列表内展开对应模型后，可编辑以下项目。修改只应用于当前供应商和当前模型；保存后新请求采用新配置，已准备或执行中的请求保持原配置。
+
+| 项目 | 实际作用 |
+| --- | --- |
+| 显示名称 | 修改聊天模型选择器中的名称，模型 ID 保持不变 |
+| 上下文长度 | 写入 `models[].contextWindow`，供宿主计量、压缩和请求准备使用；不会扩大上游真实窗口 |
+| 最大输出 tokens | 写入 `models[].maxTokens`，作为未显式指定输出上限时的默认请求值；仍受真实模型上限约束 |
+| 输入类型 | 写入 `models[].inputTypes`；可限制图片、音频、视频、PDF。聊天所需文本保留。默认不增加输入限制 |
+| 原生输出类型 | 写入 `models[].generationConfig.responseModalities`；TEXT、IMAGE、AUDIO 会成为实际 Google 请求参数 |
+| 思考档位与默认档位 | 写入 `models[].reasoning`、`defaultReasoning`，配置 token 预算或 level，并在聊天模型选择器中提供相应档位 |
+| 思考摘要 | 写入模型的 `thinkingConfig.includeThoughts`；每个思考档位可单独覆盖摘要设置。控制是否请求 Google 提供的摘要，不等同于启用或关闭思考 |
+| 模型请求超时 | 写入模型的 `generationConfig.httpOptions.timeout`；留空沿用供应商值，`0` 表示此模型不额外设置本地总时限 |
+
+容量字段留空表示清除该模型自己的声明。输入、输出及思考设置的“默认”恢复相应字段的继承或上游默认行为，不会自动探测模型能力。默认输出模式通常由上游模型决定；选择图片或音频输出仍要求当前模型与 API 支持该类型和组合。服务端专用的 Imagen、Veo 等独立 API 不会因此变成普通聊天的生成模式。
+
+思考使用 Google 原生的预算或 level 格式，不套用其他供应商的 `thinkingFormat`。预算的 `-1` 表示动态预算，`0` 只在模型支持时关闭思考；level 使用模型支持的值。仅移除思考档位声明表示不向宿主公布可选档位，不保证关闭模型的默认思考。改变或删除档位后，旧会话保存的档位可能不再有效，此时需在聊天模型选择器重新选择。
+
+界面只读取并修改这些明确的参数，不返回完整 `generationConfig`，因此私有请求头和其他未显示的原生配置不会随表单回传。旧客户端省略逐模型高级设置时，保留现有模型配置。上下文、输出 tokens 及时间参数会在保存前校验。
 
 ### 模型请求超时
 
@@ -120,7 +142,7 @@ Base URL 应指向 **Google 原生 Gemini / Vertex API**，不能使用仅提供
 
 原生文件输入默认打开，延续 `0.1.0` 的行为。各原生工具初次使用时遵循供应商及模型的已有配置，不会默认全部启用。选择会覆盖对应工具的静态配置；其他原生生成参数继续生效。
 
-内置模型采用经过核对的能力表。对自定义模型 ID，默认不显示原生选项；在 `models[].capabilities` 明确声明后才显示相应选项。声明包括 `nativeFiles`、`search`、`urlContext`、`codeExecution`、`maps`，并可用 `false` 隐藏某一项。参考[聊天能力示例](examples/chat-capabilities.yaml)。这些声明不提高 Google 模型本身的能力、权限或配额。
+内置模型采用经过核对的能力表。对自定义模型 ID，默认不显示原生选项；在 `models[].capabilities` 明确声明后显示相应选项。声明包括 `nativeFiles`、`search`、`urlContext`、`codeExecution`、`maps`，并可用 `false` 隐藏某一项。逐模型输入类型包含音频、视频或 PDF 时，也会显示原生文件选项；其他原生工具仍需各自的能力声明。参考[聊天能力示例](examples/chat-capabilities.yaml)。这些声明不提高 Google 模型本身的能力、权限或配额。
 
 `functionCallingWithNativeTools` 表示该连接是否支持在一次请求中同时使用上述原生工具和 dsh 本地函数工具，它本身不是聊天复选框。未声明支持混用的连接在启用原生工具时，会省略同一请求的本地函数声明，并在菜单中提示。AI Studio 的已核对新模型可按能力表混用；Vertex 和其他模型采用保守默认值。需要覆盖时，应先确认具体模型及连接支持该组合。
 
@@ -147,7 +169,7 @@ generationConfig:
     - urlContext: {}
 ```
 
-`httpOptions.extraBody` 使用对应 Google **REST 后端**的请求体形态，供 SDK 尚未建模的字段使用；它不是放置任意 SDK 配置的容器。其内容可能覆盖构造出的请求，需要了解具体 API 语义。Google 仍会校验未知或不支持的字段，不应依靠它绕过模型限制。
+`httpOptions.extraBody` 使用对应 Google **REST 后端**的请求体形态，供 SDK 尚未建模的字段使用；它不是放置任意 SDK 配置的容器。其内容可能覆盖构造出的请求，需要了解具体 API 语义。逐模型界面明确配置的输出类型、输出 tokens 和思考字段会优先于对应的原始请求体别名；其他原生字段继续保留。Google 仍会校验未知或不支持的字段，不应依靠它绕过模型限制。
 
 参数优先级为：本次 dsh 调用的采样、输出上限、停止序列和思考选项 > `models[].generationConfig` > 供应商级 `generationConfig`。模型级参数与供应商参数按字段覆盖，`thinkingConfig`、`httpOptions` 单独合并；不要假设所有任意嵌套 JSON 都会递归合并。dsh 的函数声明会追加到原生工具列表中。请求取消信号和必要归因头由插件设置。
 

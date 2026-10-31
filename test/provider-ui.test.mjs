@@ -71,6 +71,9 @@ describe('provider connection and model-selection settings in an actual DOM', ()
       async route(provider) { props.provider = { ...props.provider, provider }; await flush(() => root.render(React.createElement(ProviderSettings, props))) },
       field: key => container.querySelector(`[data-google-setting="${key}"]`),
       model: id => [...container.querySelectorAll('[data-google-model]')].find(node => node.dataset.googleModel === id),
+      modelExpand: id => [...container.querySelectorAll('[data-google-model-expand]')].find(node => node.dataset.googleModelExpand === id),
+      modelPanel: id => [...container.querySelectorAll('[data-google-model-advanced]')].find(node => node.dataset.googleModelAdvanced === id),
+      modelField: (id, key) => [...container.querySelectorAll('[data-google-model-advanced]')].find(node => node.dataset.googleModelAdvanced === id)?.querySelector(`[data-google-model-setting="${key}"]`),
       button: key => [...container.querySelectorAll('button')].find(button => button.textContent === key),
       async click(button) { assert.ok(button); await flush(() => button.click()) },
       async change(input, value) {
@@ -174,10 +177,12 @@ describe('provider connection and model-selection settings in an actual DOM', ()
   test('timeout edits stay disabled until a pending Save is acknowledged', async t => {
     const pending = deferred()
     const f = await mount(t, { save: () => pending.promise })
+    await f.click(f.modelExpand('gemini-3.8-flash'))
     await f.change(f.field('requestTimeoutSeconds'), '600')
     await f.click(f.button('save'))
     assert.equal(f.field('requestTimeoutSeconds').disabled, true)
     assert.equal(f.button('discover').disabled, true)
+    assert.equal(f.modelField('gemini-3.8-flash', 'contextWindow').disabled, true)
     assert.equal(f.saves[0].request.connection.requestTimeoutMs, 600000)
     await f.flush(() => pending.resolve(snapshot({ revision: 4, profiles: snapshot().profiles.map(profile => profile.provider === studio
       ? { ...profile, connection: { ...profile.connection, requestTimeoutMs: 600000 } } : profile) })))
@@ -194,6 +199,146 @@ describe('provider connection and model-selection settings in an actual DOM', ()
     await f.click(f.button('selectAll'))
     await f.click(f.button('save'))
     assert.deepEqual(f.saves[0].request.models.map(model => model.id), ['gemini-3.8-flash', 'gemini-new'])
+  })
+
+  test('existing model advanced edits alone enable Save and survive discovery without rewriting unedited native settings', async t => {
+    const state = snapshot()
+    const id = 'gemini-3.8-flash'
+    state.profiles[0].models[0].advanced = { contextWindow: 1000000, maxTokens: 32768,
+      inputTypes: ['text', 'image', 'pdf'], responseModalities: ['TEXT'], requestTimeoutMs: 90000,
+      reasoning: [{ id: 'lite', name: 'Light', thinkingLevel: 'MINIMAL' }, { id: 'max', name: 'Maximum', thinkingLevel: 'FUTURE_LEVEL' }],
+      defaultReasoning: 'lite', thinkingConfig: { includeThoughts: false, thinkingBudget: 512 } }
+    const f = await mount(t, { snapshot: state, discover: async () => ({ models: [{ id, name: 'Upstream renamed', contextWindow: 12345 }] }) })
+    await f.click(f.modelExpand(id))
+    assert.equal(f.model(id).checked, true, 'the advanced button does not toggle model selection')
+    assert.equal(f.modelField(id, 'maxTokens').value, '32768')
+    assert.equal(f.modelField(id, 'thinkingFormat').value, 'level')
+    assert.equal(f.modelPanel(id).querySelectorAll('[data-google-effort-field=value]')[1].value, 'FUTURE_LEVEL')
+    assert.equal(f.button('save').disabled, true, 'opening a model does not create an edit')
+    await f.change(f.modelField(id, 'contextWindow'), '2000000')
+    assert.equal(f.button('save').disabled, false)
+    await f.click(f.button('discover'))
+    assert.equal(f.modelField(id, 'contextWindow').value, '2000000')
+    await f.change(f.modelField(id, 'maxTokens'), '65536')
+    await f.change(f.modelField(id, 'timeoutSeconds'), '17.125')
+    await f.click(f.modelPanel(id).querySelector('[data-google-model-input=image]'))
+    await f.click(f.modelPanel(id).querySelector('[data-google-model-input=pdf]'))
+    await f.click(f.modelPanel(id).querySelector('[data-google-model-input=video]'))
+    await f.click(f.modelPanel(id).querySelector('[data-google-model-output=AUDIO]'))
+    await f.change(f.modelPanel(id).querySelector('[data-google-effort-field=value]'), 'LOW')
+    await f.change(f.modelField(id, 'includeThoughts'), 'on')
+    await f.click(f.button('save'))
+    assert.deepEqual(f.saves[0].request.models[0].advanced, { contextWindow: 2000000, maxTokens: 65536,
+      inputTypes: ['text', 'video'], responseModalities: ['TEXT', 'AUDIO'], requestTimeoutMs: 17125,
+      reasoning: [{ id: 'lite', name: 'Light', thinkingLevel: 'LOW' }, { id: 'max', name: 'Maximum', thinkingLevel: 'FUTURE_LEVEL' }],
+      thinkingConfig: { includeThoughts: true } })
+    assert.equal(f.saves[0].request.models[0].name, 'Saved Flash', 'discovery metadata does not overwrite configured metadata')
+  })
+
+  test('a newly discovered known model sends only its edited capacity and preserves Host presets', async t => {
+    const id = 'gemini-2.5-flash'
+    const f = await mount(t, { discover: async () => ({ models: [{ id, name: 'New Flash', contextWindow: 1048576, maxTokens: 65536 }] }) })
+    await f.click(f.button('discover'))
+    await f.click(f.model(id))
+    await f.click(f.modelExpand(id))
+    await f.change(f.modelField(id, 'contextWindow'), '2000000')
+    await f.click(f.button('save'))
+    const edited = f.saves[0].request.models.find(model => model.id === id)
+    assert.deepEqual(edited.advanced, { contextWindow: 2000000 }, 'no null thinking fields erase the known-model preset')
+    assert.equal('advanced' in f.saves[0].request.models.find(model => model.id === 'gemini-3.8-flash'), false)
+  })
+
+  test('every selected model is validated even when collapsed or filtered out, while unselected drafts do not block Save', async t => {
+    const f = await mount(t)
+    const id = 'gemini-3.8-flash'
+    await f.click(f.modelExpand(id))
+    for (const [key, value] of [['contextWindow', '0'], ['contextWindow', '1.5'], ['contextWindow', '9007199254740992'],
+      ['maxTokens', '1000000'], ['maxTokens', '2000000'], ['timeoutSeconds', '-1'], ['timeoutSeconds', '1.0001'], ['timeoutSeconds', '2147483.648']]) {
+      await f.change(f.modelField(id, key), value)
+      assert.equal(f.button('save').disabled, true, `${key}=${value}`)
+      assert.match(f.container.textContent, /selectedModelsError/)
+      await f.change(f.modelField(id, key), key === 'contextWindow' ? '1000000' : '')
+    }
+    await f.change(f.modelField(id, 'maxTokens'), '2000000')
+    await f.click(f.modelExpand(id))
+    await f.click(f.button('discover'))
+    await f.change(f.container.querySelector('input[type=search]'), 'new')
+    await f.click(f.model('gemini-new'))
+    assert.equal(f.button('save').disabled, true, 'invalid selected model remains invalid offscreen')
+    assert.match(f.container.textContent, /selectedModelsError.*Saved Flash/)
+    await f.change(f.container.querySelector('input[type=search]'), '')
+    await f.click(f.model(id))
+    assert.equal(f.button('save').disabled, false, 'an invalid unselected model is not persisted')
+    await f.click(f.button('save'))
+    assert.deepEqual(f.saves[0].request.models.map(model => model.id), ['gemini-new'])
+  })
+
+  test('thinking presets require unique IDs and valid values, and clearing presets removes only visible overrides', async t => {
+    const state = snapshot(), id = 'gemini-3.8-flash'
+    state.profiles[0].models[0].advanced = { reasoning: [{ id: 'low', name: 'Low', thinkingBudget: 1024 }, { id: 'high', name: 'High', thinkingBudget: 8192 }],
+      defaultReasoning: 'low', thinkingConfig: { includeThoughts: false, thinkingLevel: 'HIGH' } }
+    const f = await mount(t, { snapshot: state })
+    await f.click(f.modelExpand(id))
+    let rows = f.modelPanel(id).querySelectorAll('[data-google-model-effort]')
+    await f.change(rows[1].querySelector('[data-google-effort-field=id]'), 'low')
+    assert.equal(f.button('save').disabled, true)
+    await f.change(rows[1].querySelector('[data-google-effort-field=id]'), 'high')
+    await f.change(rows[0].querySelector('[data-google-effort-field=value]'), '-2')
+    assert.equal(f.button('save').disabled, true)
+    await f.change(rows[0].querySelector('[data-google-effort-field=value]'), '0')
+    assert.equal(f.button('save').disabled, false)
+    await f.change(f.modelField(id, 'thinkingFormat'), 'inherit')
+    await f.click(f.button('save'))
+    assert.deepEqual(f.saves[0].request.models[0].advanced, {
+      reasoning: null, defaultReasoning: null, thinkingConfig: { thinkingLevel: null },
+    })
+  })
+
+  test('invalid discovered limits block Save immediately after selection, before the advanced editor is opened', async t => {
+    const id = 'gateway/invalid-capacity'
+    const f = await mount(t, { discover: async () => ({ models: [{ id, contextWindow: 8192, maxTokens: 8192 }] }) })
+    await f.click(f.button('discover'))
+    await f.click(f.model(id))
+    assert.equal(f.button('save').disabled, true)
+    assert.match(f.container.textContent, /selectedModelsError.*gateway\/invalid-capacity/)
+    await f.click(f.modelExpand(id))
+    await f.change(f.modelField(id, 'maxTokens'), '4096')
+    await f.click(f.button('save'))
+    assert.deepEqual(f.saves[0].request.models.find(model => model.id === id).advanced, { maxTokens: 4096 }, 'fixing invalid upstream metadata still sends only the edited field')
+  })
+
+  test('clearing model limits and timeout emits explicit removals and type declarations remain valid', async t => {
+    const state = snapshot(), id = 'gemini-3.8-flash'
+    state.profiles[0].models[0].advanced = { contextWindow: 1000000, maxTokens: 8192, requestTimeoutMs: 60000,
+      inputTypes: ['text', 'image'], responseModalities: ['TEXT'] }
+    const f = await mount(t, { snapshot: state })
+    await f.click(f.modelExpand(id))
+    assert.equal(f.modelPanel(id).querySelector('[data-google-model-input=text]').disabled, true)
+    await f.click(f.modelPanel(id).querySelector('[data-google-model-output=TEXT]'))
+    assert.equal(f.button('save').disabled, true, 'custom output types require at least one modality')
+    await f.change(f.modelField(id, 'outputMode'), 'inherit')
+    await f.change(f.modelField(id, 'inputMode'), 'inherit')
+    await f.change(f.modelField(id, 'contextWindow'), '')
+    await f.change(f.modelField(id, 'maxTokens'), '')
+    await f.change(f.modelField(id, 'timeoutSeconds'), '')
+    await f.click(f.button('save'))
+    assert.deepEqual(f.saves[0].request.models[0].advanced, {
+      contextWindow: null, maxTokens: null, requestTimeoutMs: null, inputTypes: null, responseModalities: null,
+    })
+  })
+
+  test('per-preset thinking-summary overrides remain visible and can inherit the model summary switch', async t => {
+    const state = snapshot(), id = 'gemini-3.8-flash'
+    state.profiles[0].models[0].advanced = { reasoning: [{ id: 'low', name: 'Low', thinkingLevel: 'LOW', includeThoughts: false }],
+      thinkingConfig: { includeThoughts: true } }
+    const f = await mount(t, { snapshot: state })
+    await f.click(f.modelExpand(id))
+    const override = f.modelPanel(id).querySelector('[data-google-effort-field=includeThoughts]')
+    assert.equal(f.modelField(id, 'includeThoughts').value, 'on')
+    assert.equal(override.value, 'off', 'the preset override is not hidden behind the model summary control')
+    await f.change(override, 'inherit')
+    await f.click(f.button('save'))
+    assert.deepEqual(f.saves[0].request.models[0].advanced, { reasoning: [{ id: 'low', name: 'Low', thinkingLevel: 'LOW' }] })
   })
 
   test('failed discovery retains existing models and supports manual model IDs without exposing upstream errors', async t => {
@@ -213,10 +358,12 @@ describe('provider connection and model-selection settings in an actual DOM', ()
   test('changing a card route aborts discovery and late results cannot replace the new provider', async t => {
     const pending = deferred()
     const f = await mount(t, { discover: () => pending.promise })
+    await f.click(f.modelExpand('gemini-3.8-flash'))
     await f.change(f.field('baseURL'), 'https://unsaved-studio.example')
     await f.click(f.button('discover'))
     assert.equal(f.field('baseURL').disabled, true)
     assert.equal(f.field('requestTimeoutSeconds').disabled, true)
+    assert.equal(f.modelField('gemini-3.8-flash', 'contextWindow').disabled, true)
     await f.route(vertex)
     assert.equal(f.discoveries[0].signal.aborted, true)
     assert.equal(f.field('project').value, 'cloud-project')
@@ -245,15 +392,21 @@ describe('provider connection and model-selection settings in an actual DOM', ()
     const second = await mount(t, { provider: vertex })
     await first.change(first.field('baseURL'), 'https://studio-draft.example')
     await second.change(second.field('project'), 'vertex-draft-project')
+    await first.click(first.modelExpand('gemini-3.8-flash'))
+    await first.change(first.modelField('gemini-3.8-flash', 'maxTokens'), '8192')
+    await second.click(second.modelExpand('gemini-4-argon'))
+    await second.change(second.modelField('gemini-4-argon', 'contextWindow'), '2000000')
     await first.click(first.button('closeConfiguration'))
     await first.click(first.button('configure'))
     assert.equal(first.field('baseURL').value, 'https://studio-draft.example')
+    assert.equal(first.modelField('gemini-3.8-flash', 'maxTokens').value, '8192')
     assert.equal(second.field('project').value, 'vertex-draft-project')
     assert.equal(first.container.querySelector('[role=tablist]'), null)
     assert.equal(second.container.querySelector('[role=tablist]'), null)
     assert.equal(first.reads.length, 1)
     await second.click(second.button('save'))
     assert.equal(second.saves[0].request.provider, vertex)
+    assert.deepEqual(second.saves[0].request.models[0].advanced, { contextWindow: 2000000 })
     assert.equal(first.saves.length, 0)
   })
 
@@ -265,6 +418,10 @@ describe('provider connection and model-selection settings in an actual DOM', ()
     assert.equal(f.model('gemini-3.8-flash').disabled, true)
     assert.equal(f.button('save').disabled, true)
     assert.equal(f.button('discover').disabled, false)
+    await f.click(f.modelExpand('gemini-3.8-flash'))
+    assert.ok(f.modelField('gemini-3.8-flash', 'contextWindow'), 'read-only users can inspect advanced settings')
+    assert.equal(f.modelField('gemini-3.8-flash', 'contextWindow').disabled, true)
+    assert.equal(f.modelField('gemini-3.8-flash', 'thinkingFormat').disabled, true)
     await f.click(f.button('save'))
     assert.equal(f.saves.length, 0)
   })
@@ -303,7 +460,14 @@ describe('provider connection and model-selection settings in an actual DOM', ()
   })
 
   test('actual rc.5 ModelsSection and SlotRegistry mount each Google provider form and save through the real host profile', async t => {
-    const host = await realSettingsProfile(t)
+    const modelId = 'gemini-3.8-flash'
+    const host = await realSettingsProfile(t, { config: { aiStudio: { models: [{ id: modelId, name: 'Fixture Flash',
+      contextWindow: 1048576, maxTokens: 8192, inputTypes: ['text', 'image', 'pdf'],
+      reasoning: [{ id: 'balanced', name: 'Balanced', thinkingLevel: 'MEDIUM' }], defaultReasoning: 'balanced',
+      generationConfig: { temperature: 0.4, responseModalities: ['UNEXPOSED_FUTURE_MODALITY'],
+        thinkingConfig: { includeThoughts: false, thinkingLevel: 'HIGH' },
+        httpOptions: { timeout: 1234, headers: { 'X-Private': 'private-test-value' } } },
+    }] } } })
     new TypertGatewayService(host.ctx, {})
     new HostConnectionService(host.ctx, [], {})
     const peer = host.ctx.connection.createPeer({ principal: { kind: 'owner' }, interactions: 'none' })
@@ -415,6 +579,25 @@ describe('provider connection and model-selection settings in an actual DOM', ()
     assert.equal(timeout.value, '0')
     assert.equal(vertexCard.querySelector('[data-google-setting=baseURL]'), null)
     assert.equal(studioCard.querySelector('[role=tablist]'), null)
+    await React.act(async () => studioCard.querySelector('[data-google-model-expand]').click())
+    const modelPanel = studioCard.querySelector('[data-google-model-advanced]')
+    const modelField = key => modelPanel.querySelector(`[data-google-model-setting="${key}"]`)
+    assert.equal(modelField('contextWindow').value, '1048576')
+    assert.equal(modelField('timeoutSeconds').value, '1.234')
+    assert.equal(modelField('outputMode').value, 'inherit', 'unknown native output values are not exposed or rewritten')
+    assert.equal(studioCard.textContent.includes('private-test-value'), false)
+    const changeField = async (field, value) => React.act(async () => {
+      const prototype = field.tagName === 'SELECT' ? dom.window.HTMLSelectElement.prototype : dom.window.HTMLInputElement.prototype
+      Object.getOwnPropertyDescriptor(prototype, 'value').set.call(field, value)
+      Simulate.change(field)
+    })
+    await changeField(modelField('contextWindow'), '2000000')
+    await changeField(modelField('maxTokens'), '16384')
+    await changeField(modelField('timeoutSeconds'), '120.125')
+    await changeField(modelField('thinkingFormat'), 'budget')
+    await changeField(modelPanel.querySelector('[data-google-effort-field=value]'), '2048')
+    await changeField(modelField('includeThoughts'), 'on')
+    await React.act(async () => modelPanel.querySelector('[data-google-model-input=video]').click())
     await React.act(async () => {
       Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(endpoint, 'https://models-page.example/google/v1beta')
       Simulate.change(endpoint)
@@ -427,11 +610,31 @@ describe('provider connection and model-selection settings in an actual DOM', ()
     assert.equal(calls.at(-1).method, 'save')
     assert.equal(calls.at(-1).request.provider, studio)
     assert.equal(calls.at(-1).request.connection.requestTimeoutMs, 600001)
+    assert.deepEqual(calls.at(-1).request.models[0].advanced, { contextWindow: 2000000, maxTokens: 16384,
+      inputTypes: ['text', 'image', 'video', 'pdf'], requestTimeoutMs: 120125,
+      reasoning: [{ id: 'balanced', name: 'Balanced', thinkingBudget: 2048 }],
+      thinkingConfig: { includeThoughts: true, thinkingBudget: -1, thinkingLevel: null } })
     const saved = await host.ctx.nativeGoogleSettings.get({}, new AbortController().signal)
     assert.equal(saved.profiles.find(profile => profile.provider === studio).connection.baseURL, endpoint.value)
     assert.equal(saved.profiles.find(profile => profile.provider === studio).connection.requestTimeoutMs, 600001)
     const entry = host.ctx.configEditor.entries().find(item => item.options.id === 'dsh-google-native')
     assert.equal(entry.fiber.config.aiStudio.get().generationConfig.httpOptions.timeout, 600001)
+    const modelConfig = entry.fiber.config.aiStudio.get().models.find(model => model.id === modelId)
+    assert.equal(modelConfig.contextWindow, 2000000)
+    assert.equal(modelConfig.maxTokens, 16384)
+    assert.deepEqual(modelConfig.inputTypes, ['text', 'image', 'video', 'pdf'])
+    assert.equal(modelConfig.defaultReasoning, 'balanced')
+    assert.deepEqual(modelConfig.reasoning, [{ id: 'balanced', name: 'Balanced', thinkingBudget: 2048 }])
+    assert.equal(modelConfig.generationConfig.httpOptions.timeout, 120125)
+    assert.deepEqual(modelConfig.generationConfig.httpOptions.headers, { 'X-Private': 'private-test-value' })
+    assert.equal(modelConfig.generationConfig.temperature, 0.4)
+    assert.deepEqual(modelConfig.generationConfig.responseModalities, ['UNEXPOSED_FUTURE_MODALITY'])
+    assert.deepEqual(modelConfig.generationConfig.thinkingConfig, { includeThoughts: true, thinkingBudget: -1 })
+    const persisted = await readFile(new URL(`file://${host.dir}/cordis.patch.yml`), 'utf8')
+    assert.match(persisted, /contextWindow: 2000000/)
+    assert.match(persisted, /thinkingBudget: 2048/)
+    assert.equal(modelField('contextWindow').value, '2000000', 'the form reloads accepted safe model values after Save')
+    assert.equal(modelField('timeoutSeconds').value, '120.125')
     assert.equal(saved.profiles.find(profile => profile.provider === vertex).connection.baseURL, undefined)
     assert.equal(saved.profiles.find(profile => profile.provider === vertex).connection.requestTimeoutMs, undefined)
   })

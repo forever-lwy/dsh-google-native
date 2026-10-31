@@ -1,5 +1,5 @@
 import type { GenerateContentConfig, Tool } from '@google/genai'
-import type { GoogleModelConfig, GoogleProfile } from './config.js'
+import type { GoogleInputType, GoogleModelConfig, GoogleProfile } from './config.js'
 
 /** Explicit model capabilities used to decide which chat controls may be shown. */
 export interface GoogleModelCapabilities {
@@ -50,12 +50,14 @@ const knownModels = new Set(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3.8-f
 /** No family/prefix matching: an unknown ID only exposes explicitly declared capabilities. */
 export function resolveCapabilities(
   provider: string,
-  model: { id: string; capabilities?: GoogleModelCapabilities } | undefined,
+  model: { id: string; capabilities?: GoogleModelCapabilities; inputTypes?: GoogleInputType[] } | undefined,
 ): ResolvedGoogleCapabilities {
   const result = noCapabilities()
   if (!model || !['google-ai-studio', 'google-vertex-native'].includes(provider)) return result
   const known = knownModels.has(model.id)
-  for (const key of CAPABILITY_KEYS) result[key] = model.capabilities?.[key] ?? known
+  for (const key of CAPABILITY_KEYS) result[key] = model.capabilities?.[key]
+    ?? (key === 'nativeFiles' && model.inputTypes !== undefined
+      ? model.inputTypes.some(type => type === 'audio' || type === 'video' || type === 'pdf') : known)
   // AI Studio's documented mixed-tool mode requires tool context circulation.
   // The pinned SDK explicitly rejects that mode's flag on Vertex. Keep Vertex
   // mixed-tool dispatch conservative unless this exact connection opts in.

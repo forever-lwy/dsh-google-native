@@ -17,6 +17,41 @@ export const providerConnectionSchema = z.object({
 }).strict()
 export type GoogleProviderConnection = z.infer<typeof providerConnectionSchema>
 
+const optionalCapacity = z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable().optional()
+const optionalBudget = z.number().int().min(-1).max(Number.MAX_SAFE_INTEGER).nullable().optional()
+const optionalLevel = z.string().trim().min(1).max(64).nullable().optional()
+export const modelThinkingSchema = z.object({
+  includeThoughts: z.boolean().nullable().optional(), thinkingBudget: optionalBudget, thinkingLevel: optionalLevel,
+}).strict().refine(value => value.thinkingBudget == null || value.thinkingLevel == null,
+  'Thinking budget and level cannot both be set.')
+export type GoogleModelThinking = z.infer<typeof modelThinkingSchema>
+export const modelReasoningSchema = z.object({
+  id: z.string().trim().min(1).max(128), name: z.string().trim().min(1).max(512),
+  thinkingBudget: z.number().int().min(-1).max(Number.MAX_SAFE_INTEGER).optional(),
+  thinkingLevel: z.string().trim().min(1).max(64).optional(), includeThoughts: z.boolean().optional(),
+}).strict().refine(value => value.thinkingBudget === undefined || value.thinkingLevel === undefined,
+  'Thinking budget and level cannot both be set.')
+export type GoogleModelReasoning = z.infer<typeof modelReasoningSchema>
+const inputTypesSchema = z.array(z.enum(['text', 'image', 'audio', 'video', 'pdf'])).min(1).max(5)
+  .refine(values => values.includes('text') && new Set(values).size === values.length,
+    'Input types must include text and must not contain duplicates.')
+const responseModalitiesSchema = z.array(z.enum(['TEXT', 'IMAGE', 'AUDIO'])).min(1).max(3)
+  .refine(values => new Set(values).size === values.length, 'Output types must not contain duplicates.')
+/** Safe editable fields. Capacity relationships are checked after merging a save,
+ * so legacy native defaults can remain readable and be corrected in the UI. */
+export const modelAdvancedSchema = z.object({
+  name: z.string().trim().min(1).max(1024).nullable().optional(),
+  contextWindow: optionalCapacity, maxTokens: optionalCapacity,
+  inputTypes: inputTypesSchema.nullable().optional(),
+  responseModalities: responseModalitiesSchema.nullable().optional(),
+  requestTimeoutMs: z.number().int().nonnegative().max(MAX_REQUEST_TIMEOUT_MS).nullable().optional(),
+  reasoning: z.array(modelReasoningSchema).max(64).nullable().optional(),
+  defaultReasoning: z.string().trim().min(1).max(128).nullable().optional(),
+  thinkingConfig: modelThinkingSchema.nullable().optional(),
+}).strict().refine(value => !value.reasoning || new Set(value.reasoning.map(item => item.id)).size === value.reasoning.length,
+  'Reasoning effort IDs must be unique.')
+export type GoogleModelAdvanced = z.infer<typeof modelAdvancedSchema>
+
 export const providerModelSchema = z.object({
   id: z.string().trim().min(1).max(1024).refine(value => !/[\s\\?#\u0000-\u001f\u007f]/.test(value)
     && !/^https?:\/\//i.test(value) && !value.split('/').some(segment => segment === '.' || segment === '..')),
@@ -24,6 +59,7 @@ export const providerModelSchema = z.object({
   contextWindow: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   maxTokens: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   supportsGenerateContent: z.boolean().optional(),
+  advanced: modelAdvancedSchema.optional(),
 }).strict()
 export type GoogleProviderModel = z.infer<typeof providerModelSchema>
 

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join, extname } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { withGoogleAbort } from './transport.js'
+import type { GoogleInputType } from './config.js'
 
 export interface NativeFileOptions {
   /** AI Studio uploads files above this size through the Gemini Files API. */
@@ -69,6 +70,24 @@ function positiveOption(value: number | undefined, fallback: number, name: strin
   return value
 }
 
+/** Model declarations constrain native inputs; they do not grant backend support. */
+export function assertNativeInputType(type: GoogleInputType, allowed: readonly GoogleInputType[] | undefined): void {
+  if (allowed !== undefined && !allowed.includes(type)) {
+    throw new LlmError(`此模型未声明 ${type} 输入能力，请在模型高级设置中核对支持的输入类型。`, 'UNSUPPORTED_INPUT_TYPE')
+  }
+}
+
+function assertMimeType(mimeType: string, allowed: readonly GoogleInputType[] | undefined): void {
+  if (allowed === undefined) return
+  const base = mimeType.split(';', 1)[0].trim().toLowerCase()
+  const type: GoogleInputType | undefined = base.startsWith('image/') ? 'image'
+    : base.startsWith('audio/') ? 'audio' : base.startsWith('video/') ? 'video'
+      : base === 'application/pdf' ? 'pdf'
+        : base.startsWith('text/') || ['application/json', 'application/xml', 'application/javascript'].includes(base) ? 'text' : undefined
+  if (type === undefined) throw new LlmError('文件 MIME 类型不属于支持的原生输入类型。', 'UNSUPPORTED_FILE_TYPE')
+  assertNativeInputType(type, allowed)
+}
+
 /** Reads exclusively through the verified durable attachment store. */
 export class NativeFileStore {
   private readonly options: Required<NativeFileOptions>
@@ -89,27 +108,53 @@ export class NativeFileStore {
     }
   }
 
-  async imagePart(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<Part> {
+  async imagePart(ref: ImageAttachmentRef, signal?: AbortSignal, allowed?: readonly GoogleInputType[]): Promise<Part> {
     signal?.throwIfAborted()
+    assertNativeInputType('image', allowed)
     const stored = await this.attachments.readImage(ref, signal)
     signal?.throwIfAborted()
     return { inlineData: { mimeType: stored.ref.mediaType, data: Buffer.from(stored.data).toString('base64') } }
   }
 
-  async filePart(ref: FileAttachmentRef, signal?: AbortSignal): Promise<Part> {
+  /** Inspect a bounded prefix of every input before any upload for this request starts. */
+  async validateInputType(ref: FileAttachmentRef, allowed: readonly GoogleInputType[], signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted()
+    this.validateSize(ref)
+    const cached = this.uploaded.get(`${ref.attachmentId}:${extname(ref.name).toLowerCase()}`)
+    if (cached && cached.expires > Date.now() + 60_000 && cached.part.fileData?.mimeType) {
+      assertMimeType(cached.part.fileData.mimeType, allowed)
+      return
+    }
+    let prefix = Buffer.alloc(0)
+    for await (const chunk of this.attachments.readFileStream(ref, signal)) {
+      signal?.throwIfAborted()
+      prefix = Buffer.concat([prefix, Buffer.from(chunk).subarray(0, 32 - prefix.byteLength)])
+      if (prefix.byteLength === 32) break
+    }
+    assertMimeType(detectMimeType(ref.name, prefix), allowed)
+  }
+
+  private validateSize(ref: FileAttachmentRef): void {
     if (!Number.isSafeInteger(ref.bytes) || ref.bytes < 0 || ref.bytes > this.options.maxFileBytes) {
       throw new LlmError(`Attachment exceeds maxFileBytes (${this.options.maxFileBytes}).`, 'FILE_TOO_LARGE')
     }
     if (this.backend === 'vertex' && ref.bytes > this.options.inlineMaxBytes) {
       throw new LlmError(`Vertex local attachment exceeds inlineMaxBytes (${this.options.inlineMaxBytes}). Supply a Google Cloud Storage gs:// URI as a native fileData part, or reduce the file.`, 'FILE_TOO_LARGE')
     }
+  }
+
+  async filePart(ref: FileAttachmentRef, signal?: AbortSignal, allowed?: readonly GoogleInputType[]): Promise<Part> {
+    signal?.throwIfAborted()
+    this.validateSize(ref)
     const key = `${ref.attachmentId}:${extname(ref.name).toLowerCase()}`
     const cached = this.uploaded.get(key)
-    if (cached && cached.expires > Date.now() + 60_000) return structuredClone(cached.part)
+    if (cached && cached.expires > Date.now() + 60_000) {
+      if (cached.part.fileData?.mimeType) assertMimeType(cached.part.fileData.mimeType, allowed)
+      return structuredClone(cached.part)
+    }
     this.uploaded.delete(key)
     if (this.backend === 'ai-studio' && ref.bytes > this.options.inlineThresholdBytes) {
-      return this.upload(ref, key, signal)
+      return this.upload(ref, key, signal, allowed)
     }
     const chunks: Buffer[] = []
     let size = 0
@@ -122,11 +167,12 @@ export class NativeFileStore {
     if (size !== ref.bytes) throw new LlmError('Attachment size does not match its durable reference.', 'INVALID_ATTACHMENT')
     const bytes = Buffer.concat(chunks, size)
     const mimeType = detectMimeType(ref.name, bytes.subarray(0, 32))
+    assertMimeType(mimeType, allowed)
     signal?.throwIfAborted()
     return { inlineData: { mimeType, data: bytes.toString('base64') } }
   }
 
-  private async upload(ref: FileAttachmentRef, key: string, signal?: AbortSignal): Promise<Part> {
+  private async upload(ref: FileAttachmentRef, key: string, signal?: AbortSignal, allowed?: readonly GoogleInputType[]): Promise<Part> {
     const directory = await mkdtemp(join(tmpdir(), 'dsh-google-file-'))
     const path = join(directory, 'attachment')
     try {
@@ -145,6 +191,7 @@ export class NativeFileStore {
       } finally { await file.close() }
       if (size !== ref.bytes) throw new LlmError('Attachment size does not match its durable reference.', 'INVALID_ATTACHMENT')
       const mimeType = detectMimeType(ref.name, prefix)
+      assertMimeType(mimeType, allowed)
       signal?.throwIfAborted()
       const uploaded = await withGoogleAbort(signal, () => this.client.files.upload({
         file: path,
@@ -154,7 +201,9 @@ export class NativeFileStore {
       }))
       const active = await this.waitForActive(uploaded, signal)
       if (!active.uri) throw new LlmError('Google Files API returned no file URI.', 'INVALID_RESPONSE')
-      const part: Part = { fileData: { fileUri: active.uri, mimeType: active.mimeType ?? mimeType } }
+      const activeMimeType = active.mimeType ?? mimeType
+      assertMimeType(activeMimeType, allowed)
+      const part: Part = { fileData: { fileUri: active.uri, mimeType: activeMimeType } }
       const expiration = active.expirationTime === undefined ? Date.now() + 60 * 60_000 : Date.parse(active.expirationTime)
       this.uploaded.set(key, { part, expires: Number.isFinite(expiration) ? expiration : Date.now() })
       // Bound metadata growth in a long-lived profile. Remote objects retain Google's own TTL.

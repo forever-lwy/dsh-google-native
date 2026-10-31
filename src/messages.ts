@@ -1,7 +1,8 @@
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, GenerateOptions, RequestMessage } from '@deepseek-ai/dsh-llm'
 import type { Content, Part, FunctionResponsePart } from '@google/genai'
-import type { NativeFileStore } from './files.js'
+import { assertNativeInputType, type NativeFileStore } from './files.js'
+import type { GoogleInputType } from './config.js'
 
 interface ReplayBlock { parts: Part[]; block?: ContentBlock }
 interface NativeReplay {
@@ -60,7 +61,23 @@ function parseArguments(value: string): Record<string, unknown> {
 
 interface CallIdentity { name: string; nativeId?: string }
 
-export async function translateMessages(options: GenerateOptions, files: NativeFileStore): Promise<{ contents: Content[]; systemInstruction?: Content }> {
+export async function translateMessages(options: GenerateOptions, files: NativeFileStore, inputTypes?: readonly GoogleInputType[]): Promise<{ contents: Content[]; systemInstruction?: Content }> {
+  if (inputTypes !== undefined) {
+    // Check the entire request before a preceding, allowed file starts an
+    // upload. Assistant replay stays exact: its signatures and generated media
+    // belong to the previous response, not a newly submitted input file.
+    for (const message of options.messages) {
+      if (message.role === 'system' || message.role === 'developer') continue
+      const replay = replayEntries(message, options)
+      for (let index = 0; index < message.content.length; index++) {
+        const block = message.content[index]
+        if (replay !== undefined && matchingReplayParts(block, replay[index]) !== undefined) continue
+        if (block.type === 'image' && !block.offloaded) assertNativeInputType('image', inputTypes)
+        else if (block.type === 'file') await files.validateInputType(block.attachment, inputTypes, options.signal)
+        else if (block.type === 'text' || block.type === 'reasoning') assertNativeInputType('text', inputTypes)
+      }
+    }
+  }
   const contents: Content[] = []
   const system: Part[] = options.system === undefined ? [] : [{ text: options.system }]
   const calls = new Map<string, CallIdentity>()
@@ -90,11 +107,11 @@ export async function translateMessages(options: GenerateOptions, files: NativeF
       for (const block of message.content) {
         if (block.type === 'text' || block.type === 'reasoning') text.push(block.text)
         else if (block.type === 'image') {
-          const part = block.offloaded ? undefined : await files.imagePart(block.attachment, options.signal)
+          const part = block.offloaded ? undefined : await files.imagePart(block.attachment, options.signal, inputTypes)
           if (part?.inlineData) media.push({ inlineData: part.inlineData })
           else text.push(`[Image ${block.attachment.name ?? block.attachment.attachmentId} was offloaded.]`)
         } else if (block.type === 'file') {
-          const part = await files.filePart(block.attachment, options.signal)
+          const part = await files.filePart(block.attachment, options.signal, inputTypes)
           if (part.inlineData) media.push({ inlineData: part.inlineData })
           if (part.fileData) media.push({ fileData: part.fileData })
         } else throw new LlmError(`Unsupported tool result content type: ${block.type}.`, 'UNSUPPORTED_CONTENT')
@@ -126,8 +143,8 @@ export async function translateMessages(options: GenerateOptions, files: NativeF
         parts.push({ text: block.text })
       } else if (block.type === 'image') {
         if (block.offloaded) parts.push({ text: `[Image ${block.attachment.name ?? block.attachment.attachmentId} was offloaded.]` })
-        else parts.push(await files.imagePart(block.attachment, options.signal))
-      } else if (block.type === 'file') parts.push(await files.filePart(block.attachment, options.signal))
+        else parts.push(await files.imagePart(block.attachment, options.signal, inputTypes))
+      } else if (block.type === 'file') parts.push(await files.filePart(block.attachment, options.signal, inputTypes))
       else if (block.type === 'tool-call') {
         if (message.role !== 'assistant') throw new LlmError('Function calls must appear in assistant messages.', 'INVALID_TOOL_CALL')
         parts.push({ functionCall: { id: block.id, name: block.name, args: parseArguments(block.arguments) } })

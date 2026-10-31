@@ -8,6 +8,7 @@ import { normalizeNativeEndpoint } from './client-factory.js'
 
 export const GOOGLE_PROVIDERS = ['google-ai-studio', 'google-vertex-native'] as const
 export type GoogleProvider = typeof GOOGLE_PROVIDERS[number]
+export type GoogleInputType = 'text' | 'image' | 'audio' | 'video' | 'pdf'
 
 export interface GoogleReasoningConfig {
   id: string
@@ -22,6 +23,8 @@ export interface GoogleModelConfig {
   name?: string
   contextWindow?: number
   maxTokens?: number
+  /** Explicit native input capabilities; omitted preserves legacy adapter behavior. */
+  inputTypes?: GoogleInputType[]
   /** Explicit selectable settings; no model capabilities are guessed for custom IDs. */
   reasoning?: GoogleReasoningConfig[]
   defaultReasoning?: string
@@ -77,6 +80,9 @@ const reasoning = z.object({
 })
 const model = z.object({
   id: z.string().required(), name: z.string(), contextWindow: z.number().min(1), maxTokens: z.number().min(1),
+  // Schemastery arrays otherwise materialize absent fields as [], which would
+  // turn legacy models into an explicit invalid empty input declaration.
+  inputTypes: z.array(z.union(['text', 'image', 'audio', 'video', 'pdf'])).extra('default', undefined).description('此模型原生接受的输入类型，必须包含 text'),
   reasoning: z.array(reasoning), defaultReasoning: z.string(),
   generationConfig: z.dict(z.any()).description('Google GenerateContentConfig 原生 JSON 参数'),
   capabilities: z.object({
@@ -164,11 +170,25 @@ export function validateProfile(provider: GoogleProvider, input: VolatileSnapsho
   for (const entry of profile.models) {
     if (!entry.id.trim() || ids.has(entry.id)) throw new LlmError('Google 模型 ID 不得为空或重复', 'INVALID_CONFIG')
     ids.add(entry.id)
+    for (const capacity of [entry.contextWindow, entry.maxTokens]) {
+      if (capacity !== undefined && (!Number.isSafeInteger(capacity) || capacity <= 0)) {
+        throw new LlmError('模型上下文长度与最大生成 tokens 必须是正整数', 'INVALID_CONFIG')
+      }
+    }
+    if (entry.contextWindow !== undefined && entry.maxTokens !== undefined && entry.maxTokens >= entry.contextWindow) {
+      throw new LlmError('最大生成 tokens 必须小于模型上下文长度', 'INVALID_CONFIG')
+    }
+    if (entry.inputTypes !== undefined && (!Array.isArray(entry.inputTypes) || !entry.inputTypes.includes('text')
+      || entry.inputTypes.some(type => !['text', 'image', 'audio', 'video', 'pdf'].includes(type))
+      || new Set(entry.inputTypes).size !== entry.inputTypes.length)) {
+      throw new LlmError('模型输入类型必须包含 text，且仅包含不重复的受支持类型', 'INVALID_CONFIG')
+    }
     const efforts = new Set<string>()
     for (const effort of entry.reasoning ?? []) {
-      if (!effort.id.trim() || efforts.has(effort.id)) throw new LlmError('Google 思考强度 ID 不得为空或重复', 'INVALID_CONFIG')
+      if (!effort.id.trim() || !effort.name.trim() || efforts.has(effort.id)) throw new LlmError('Google 思考强度 ID、名称不得为空，ID 不得重复', 'INVALID_CONFIG')
       efforts.add(effort.id)
-      if (effort.thinkingBudget !== undefined && (!Number.isInteger(effort.thinkingBudget) || effort.thinkingBudget < -1)) throw new LlmError('thinkingBudget 必须是大于等于 -1 的整数', 'INVALID_CONFIG')
+      if (effort.thinkingBudget !== undefined && (!Number.isSafeInteger(effort.thinkingBudget) || effort.thinkingBudget < -1)) throw new LlmError('thinkingBudget 必须是大于等于 -1 的整数', 'INVALID_CONFIG')
+      if (effort.thinkingLevel !== undefined && !effort.thinkingLevel.trim()) throw new LlmError('thinkingLevel 不得为空', 'INVALID_CONFIG')
       if (effort.thinkingBudget !== undefined && effort.thinkingLevel !== undefined) throw new LlmError('同一思考选项不能同时指定 thinkingBudget 与 thinkingLevel', 'INVALID_CONFIG')
     }
     if (entry.defaultReasoning !== undefined && !efforts.has(entry.defaultReasoning)) throw new LlmError('defaultReasoning 必须属于该模型的 reasoning 列表', 'INVALID_CONFIG')
@@ -187,5 +207,5 @@ function validateHttpTimeout(timeout: number | undefined): void {
 }
 
 function validateThinking(thinking: ThinkingConfig | undefined): void {
-  if (thinking?.thinkingBudget !== undefined && thinking.thinkingLevel !== undefined) throw new LlmError('thinkingConfig 不能同时指定 thinkingBudget 与 thinkingLevel', 'INVALID_CONFIG')
+  if (typeof thinking?.thinkingBudget === 'number' && typeof thinking.thinkingLevel === 'string') throw new LlmError('thinkingConfig 不能同时指定 thinkingBudget 与 thinkingLevel', 'INVALID_CONFIG')
 }
