@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createHash } from 'node:crypto'
-import { mkdtemp, open, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, link, mkdir, mkdtemp, open, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -22,6 +22,7 @@ const TOOL = 'google_native_attach_file'
 const MODEL = 'offline-native-file-model'
 const providers = ['google-ai-studio', 'google-vertex-native']
 const originalFetch = globalThis.fetch
+const nativeClarification = 'The original file is also attached natively below. The local-path note above concerns local file tools only.'
 const pdf = Buffer.from('%PDF-1.7\n\0original binary document\xff', 'latin1')
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l1sAAAAASUVORK5CYII=', 'base64')
 const wav = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WAVEfmt '), Buffer.from([0, 255, 0, 128])])
@@ -37,41 +38,51 @@ class OfflineQueries extends SessionQueryEngine {
  * No parser, submodel, live API, deployment profile or resident service is used.
  */
 async function fixture(t, { provider = providers[0], model = MODEL, mode = 'native', path = 'report.pdf', bytes = pdf,
-  inputTypes = ['text', 'image', 'audio', 'video', 'pdf'], enabled = true, nativeCapability = true, humanUpload = false, mountPlugin = false } = {}) {
+  inputTypes = ['text', 'image', 'audio', 'video', 'pdf'], enabled = true, nativeCapability = true, humanUpload = false, mountPlugin = false, mapped = true } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-native-file-tool-'))
+  const hostStorage = await mkdtemp(join(tmpdir(), 'dsh-native-file-objects-'))
+  const executionStorage = join(directory, 'readonly-attachments')
+  await mkdir(executionStorage)
   await writeFile(join(directory, path), bytes)
   const ctx = new Context()
-  t.after(async () => { await ctx.fiber.dispose(); await rm(directory, { recursive: true, force: true }) })
+  t.after(async () => { await ctx.fiber.dispose(); await rm(directory, { recursive: true, force: true }); await rm(hostStorage, { recursive: true, force: true }) })
   new LlmRuntime(ctx)
   new SessionStore(ctx)
   new AgentRegistry(ctx)
   new OfflineQueries(ctx)
   new SystemPrompt(ctx, { includeHarnessIdentity: false })
   const rawReads = [], parserReads = [], writes = [], stored = new Map(), readIds = []
+  const attachmentPaths = new Map()
   const locations = new Map()
   let onRawRead, afterNested
   const digest = data => createHash('sha256').update(data).digest('hex')
-  function remember(data, name) {
+  async function remember(data, name) {
     const copy = Buffer.from(data)
     const ref = { attachmentId: digest(copy), name: name ?? 'file', bytes: copy.length }
+    if (!attachmentPaths.has(ref.attachmentId)) {
+      const paths = { host: join(hostStorage, ref.attachmentId), execution: join(executionStorage, ref.attachmentId) }
+      await writeFile(paths.host, copy, { mode: 0o444, flag: 'wx' })
+      await link(paths.host, paths.execution)
+      attachmentPaths.set(ref.attachmentId, paths)
+    }
     stored.set(ref.attachmentId, copy)
     return ref
   }
   ctx.provide('attachments', {
-    fileHostPath: () => undefined,
-    async saveFile(input) { const ref = remember(input.data, input.name); writes.push(ref); return ref },
+    fileHostPath: ref => attachmentPaths.get(ref.attachmentId)?.host,
+    async saveFile(input) { const ref = await remember(input.data, input.name); writes.push(ref); return ref },
     async saveFileStream(input) {
       const chunks = []
       for await (const chunk of input.data) { input.signal?.throwIfAborted(); chunks.push(Buffer.from(chunk)) }
       input.signal?.throwIfAborted()
-      const ref = remember(Buffer.concat(chunks), input.name)
+      const ref = await remember(Buffer.concat(chunks), input.name)
       writes.push(ref)
       return ref
     },
     async *readFileStream(ref, signal) {
       signal?.throwIfAborted()
-      const data = stored.get(ref.attachmentId)
-      assert.ok(data, 'the request reads an attachment committed by the tool')
+      assert.ok(attachmentPaths.has(ref.attachmentId), 'the request reads an attachment committed by the tool')
+      const data = await readFile(attachmentPaths.get(ref.attachmentId).host)
       assert.equal(digest(data), ref.attachmentId)
       assert.equal(data.length, ref.bytes)
       readIds.push(ref.attachmentId)
@@ -122,7 +133,7 @@ async function fixture(t, { provider = providers[0], model = MODEL, mode = 'nati
     async readText() { parserReads.push('text'); throw new Error('No text parser is part of native attachment delivery') },
     async streamText() { parserReads.push('stream'); throw new Error('No text parser is part of native attachment delivery') },
     processPath() { throw new Error('The tool must use the mounted filesystem capability') },
-    processPathFromHostPath: () => undefined,
+    processPathFromHostPath: hostPath => mapped ? [...attachmentPaths.values()].find(paths => paths.host === hostPath)?.execution : undefined,
   })
   ctx.provide('workingDirectory', { get: () => directory, ensure: async () => directory })
   const profiles = Object.fromEntries(providers.map(id => [id, defaultProfile(id)]))
@@ -175,7 +186,7 @@ async function fixture(t, { provider = providers[0], model = MODEL, mode = 'nati
   const executionResults = []
   ctx.on('tools/result', (exec, result) => { executionResults.push({ exec, result }) })
   session.append('request/header', { header: { config: { provider, model } }, reason: 'initial' })
-  const userFile = humanUpload ? remember(Buffer.from('%PDF-1.7\nordinary human upload'), 'human-upload.pdf') : undefined
+  const userFile = humanUpload ? await remember(Buffer.from('%PDF-1.7\nordinary human upload'), 'human-upload.pdf') : undefined
   const human = createUserMessage({ source: { kind: 'user', googleNative: { version: 1, selections: [{ provider, model,
     choices: { nativeFiles: false, search: false, urlContext: false, codeExecution: false, maps: false } }] } },
     content: [{ type: 'text', text: 'Use the native attachment tool to inspect the workspace file.' },
@@ -233,7 +244,7 @@ async function fixture(t, { provider = providers[0], model = MODEL, mode = 'nati
     const persisted = JSON.parse(await readFile(path, 'utf8'))
     return { session: Session.create(persisted.id, persisted.events, persisted.header), events: persisted.events }
   }
-  return { ctx, agent, session, profiles, requests, rawReads, parserReads, writes, stored, readIds, userFile, injections, executionResults, pluginFiber,
+  return { ctx, agent, session, profiles, requests, rawReads, parserReads, writes, stored, readIds, userFile, injections, executionResults, pluginFiber, directory, attachmentPaths, mapped,
     assembly, bind, generate, execute, restore,
     onRawRead(callback) { onRawRead = callback }, afterNested(callback) { afterNested = callback },
   }
@@ -241,6 +252,33 @@ async function fixture(t, { provider = providers[0], model = MODEL, mode = 'nati
 
 const toolCall = message => message.content.find(block => block.type === 'tool-call')
 const inlineParts = body => body.contents.flatMap(content => content.parts).filter(part => part.inlineData)
+const requestText = body => body.contents.flatMap(content => content.parts).flatMap(part => [part.text,
+  part.functionResponse?.response?.output, part.functionResponse?.response?.error].filter(value => typeof value === 'string')).join('\n')
+
+async function assertFileToolAccess(f, body, attachment, bytes) {
+  const text = requestText(body)
+  const paths = f.attachmentPaths.get(attachment.attachmentId)
+  assert.equal(text.includes(paths.host), false, 'the actual attachment-host path is not passed off as an execution-world path')
+  if (!f.mapped) {
+    assert.match(text, /cannot access a readable path/)
+    assert.match(text, /do not claim to have read it/)
+    assert.equal(text.includes(paths.execution), false)
+    return
+  }
+  const advertised = [...text.matchAll(/verbatim read-only copy saved at ("(?:[^"\\]|\\.)*")/g)].map(match => JSON.parse(match[1]))
+    .filter(path => path === paths.execution)
+  assert.equal(advertised.length, 1, 'one file occurrence contributes one core-projected path hint')
+  assert.match(text, /Read that path with your file tools/)
+  assert.match(text, /copy it to a writable location before modifying it/)
+  assert.equal((await stat(advertised[0])).mode & 0o222, 0)
+  assert.deepEqual(await readFile(advertised[0]), bytes, 'file tools read the same original bytes the native API received')
+  const copy = join(f.directory, `writable-copy-${attachment.attachmentId}`)
+  await copyFile(advertised[0], copy)
+  await chmod(copy, 0o600)
+  await writeFile(copy, Buffer.concat([bytes, Buffer.from('\nmodified local copy')]))
+  assert.deepEqual(await readFile(advertised[0]), bytes, 'editing a copied file does not modify the read-only attachment')
+  assert.deepEqual(await readFile(paths.host), bytes)
+}
 
 for (const provider of providers) {
   for (const [path, bytes, mimeType] of [['report.pdf', pdf, 'application/pdf'], ['screen.png', png, 'image/png'],
@@ -252,6 +290,8 @@ for (const provider of providers) {
       const first = await f.generate()
       assert.equal(f.requests.length, 1)
       assert.equal(inlineParts(f.requests[0].body).length, 0, 'the ordinary human upload switch remains disabled')
+      await assertFileToolAccess(f, f.requests[0].body, f.userFile, f.stored.get(f.userFile.attachmentId))
+      assert.equal(requestText(f.requests[0].body).includes(nativeClarification), false)
       const call = toolCall(first)
       assert.equal(call.name, TOOL)
       const result = await f.execute(call)
@@ -261,6 +301,9 @@ for (const provider of providers) {
       assert.deepEqual(f.stored.get(f.writes[0].attachmentId), bytes)
       const durable = await f.restore()
       assert.ok(durable.events.some(event => event.type === 'tool/result' && event.data.message.content.some(block => block.type === 'file')))
+      const originalEvents = JSON.stringify(durable.events)
+      assert.equal(originalEvents.includes(f.attachmentPaths.get(f.writes[0].attachmentId).execution), false, 'local path hints remain request projections, not durable file content')
+      await writeFile(join(f.directory, path), Buffer.from('The workspace source changed after its original bytes were attached.'))
       await f.generate(durable.session.deriveMessages(), 1)
       assert.equal(f.requests.length, 2, 'only the original model step and its normal continuation are generated')
       assert.ok(f.requests.every(request => request.url.includes(MODEL)))
@@ -268,10 +311,18 @@ for (const provider of providers) {
       assert.equal(parts.length, 1)
       assert.equal(parts[0].inlineData.mimeType, mimeType)
       assert.deepEqual(Buffer.from(parts[0].inlineData.data, 'base64'), bytes)
+      await assertFileToolAccess(f, f.requests[1].body, f.writes[0], bytes)
+      assert.equal(requestText(f.requests[1].body).split(nativeClarification).length - 1, 1)
       assert.ok(f.requests[1].body.contents.flatMap(content => content.parts).some(part => part.functionResponse))
       assert.ok(f.requests[1].body.contents.flatMap(content => content.parts).every(part => !part.functionResponse?.parts), 'media is adjacent user input, independent of functionResponse media support')
       assert.equal(f.readIds.includes(f.userFile.attachmentId), false)
       assert.deepEqual(f.parserReads, [])
+      await f.generate(durable.session.deriveMessages(), 2)
+      assert.equal(inlineParts(f.requests[2].body).length, 1, 'replaying saved history does not duplicate a native upload')
+      await assertFileToolAccess(f, f.requests[2].body, f.writes[0], bytes)
+      assert.equal(requestText(f.requests[2].body).split(nativeClarification).length - 1, 1)
+      assert.equal(JSON.stringify(durable.events), originalEvents)
+      assert.equal(f.writes.length, 1)
     })
   }
 
@@ -288,10 +339,21 @@ for (const provider of providers) {
     assert.ok(durable.events.some(event => event.type === 'tool/ptc-dispatch'))
     const rawContext = durable.session.deriveMessages().find(message => message.role === 'user' && message.source.kind === 'google-native-file')
     assert.ok(rawContext?.content.some(block => block.type === 'file'))
+    const originalEvents = JSON.stringify(durable.events)
+    assert.equal(originalEvents.includes(f.attachmentPaths.get(f.writes[0].attachmentId).execution), false)
     await f.generate(durable.session.deriveMessages(), 1)
     assert.equal(f.requests.length, 2)
     assert.deepEqual(Buffer.from(inlineParts(f.requests[1].body)[0].inlineData.data, 'base64'), pdf)
+    assert.equal(inlineParts(f.requests[1].body).length, 1)
+    await assertFileToolAccess(f, f.requests[1].body, f.writes[0], pdf)
+    assert.equal(requestText(f.requests[1].body).split(nativeClarification).length - 1, 1)
     assert.deepEqual(f.parserReads, [])
+    await f.generate(durable.session.deriveMessages(), 2)
+    assert.equal(inlineParts(f.requests[2].body).length, 1)
+    await assertFileToolAccess(f, f.requests[2].body, f.writes[0], pdf)
+    assert.equal(requestText(f.requests[2].body).split(nativeClarification).length - 1, 1)
+    assert.equal(JSON.stringify(durable.events), originalEvents)
+    assert.equal(f.writes.length, 1)
   })
 
   test(`${provider}: a configured image-only model can attach an original PNG with the non-image native-file capability disabled`, async t => {
@@ -303,7 +365,22 @@ for (const provider of providers) {
     await f.generate(durable.session.deriveMessages(), 1)
     assert.equal(f.requests.length, 2)
     assert.deepEqual(Buffer.from(inlineParts(f.requests[1].body)[0].inlineData.data, 'base64'), png)
+    await assertFileToolAccess(f, f.requests[1].body, f.writes[0], png)
     assert.deepEqual(f.parserReads, [])
+  })
+
+  for (const mode of ['native', 'ptc']) test(`${provider}: ${mode === 'native' ? 'direct' : 'PTC'} self-attachment keeps native bytes and honestly reports an unmapped local path`, async t => {
+    const f = await fixture(t, { provider, mode, mapped: false })
+    const first = await f.generate()
+    assert.equal((await f.execute(toolCall(first))).isError, false)
+    const durable = await f.restore()
+    await f.generate(durable.session.deriveMessages(), 1)
+    const parts = inlineParts(f.requests[1].body)
+    assert.equal(parts.length, 1)
+    assert.deepEqual(Buffer.from(parts[0].inlineData.data, 'base64'), pdf)
+    await assertFileToolAccess(f, f.requests[1].body, f.writes[0], pdf)
+    assert.ok(requestText(f.requests[1].body).includes(nativeClarification))
+    assert.equal(f.writes.length, 1)
   })
 }
 

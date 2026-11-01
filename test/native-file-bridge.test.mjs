@@ -53,7 +53,9 @@ for (const provider of ['google-ai-studio', 'google-vertex-native']) {
     const { result, reads } = await translated(f)
     const parts = result.contents.at(-1).parts
     assert.equal(parts[0].functionResponse.name, 'google_native_attach_file')
-    assert.equal(parts[0].functionResponse.response.output, 'Keep this policy feedback alongside the native attachment.')
+    assert.ok(parts[0].functionResponse.response.output.startsWith('Keep this policy feedback alongside the native attachment.\n'))
+    assert.ok(parts[0].functionResponse.response.output.includes('/read-only/file'))
+    assert.ok(parts[0].functionResponse.response.output.includes('verbatim read-only copy'))
     assert.equal(parts[0].functionResponse.parts, undefined, 'older models must not receive multimodal functionResponse.parts')
     assert.deepEqual(parts[1], { inlineData: { mimeType: 'application/pdf', data: bytes.toString('base64') } })
     assert.equal(reads, 1)

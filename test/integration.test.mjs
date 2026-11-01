@@ -3,7 +3,7 @@ import test from 'node:test'
 import { withNativeFileContext, restoreNativeFiles, registerNativeFileBridge } from '../lib/file-scope.js'
 import { Config, profilesOf, defaultProfile, validateProfile } from '../lib/config.js'
 import { Context } from '@deepseek-ai/cordis'
-import { LlmRuntime, LlmAdapter, createUserMessage, createAssistantMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { LlmRuntime, LlmAdapter, createUserMessage, createAssistantMessage, createToolResultMessage, projectFilesToText, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { GoogleNativeAdapter } from '../lib/adapter.js'
 import * as GooglePlugin from '../lib/index.js'
 import { readFile } from 'node:fs/promises'
@@ -29,7 +29,8 @@ test('native file bridge keeps durable file references and core replay filtering
     yield { type: 'finish', reason: { kind: 'stop' } }
   }
   for await (const _ of withNativeFileContext(original, next)) { /* consume scope */ }
-  assert.equal(restored.messages[0].content[0], original.messages[0].content[0])
+  assert.ok(restored.messages[0].content[0].text.startsWith(projected.messages[0].content[0].text))
+  assert.equal(restored.messages[0].content[1], original.messages[0].content[0])
   assert.equal(projected.messages[0].content[0].type, 'text')
   assert.equal(JSON.stringify(original), before)
   assert.equal(restoreNativeFiles(projected), projected)
@@ -45,7 +46,52 @@ test('native file bridge follows stable message IDs after core removes developer
     yield { type: 'finish', reason: { kind: 'stop' } }
   })) { /* consume scope */ }
   assert.equal(restored.messages.length, 1)
-  assert.equal(restored.messages[0].content[0].attachment.name, 'speech.wav')
+  assert.equal(restored.messages[0].content[1].attachment.name, 'speech.wav')
+})
+
+test('native inputs retain exact mapped and unmapped core hints in multi-file order', async () => {
+  const first = file('first.pdf'), second = file('second.wav')
+  const original = request('unused.pdf')
+  original.messages = [Object.freeze({ id: 'multi', role: 'user', content: Object.freeze([
+    { type: 'text', text: 'Before' }, first, { type: 'text', text: 'Between' }, second, { type: 'text', text: 'After' },
+  ]) })]
+  const projected = { ...original, messages: projectFilesToText(original.messages,
+    ref => ref.name === 'first.pdf' ? '/execution/read-only/first.pdf' : undefined) }
+  const before = JSON.stringify([original, projected])
+  let restored
+  for await (const _ of withNativeFileContext(original, async function* () {
+    restored = restoreNativeFiles(projected)
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })) { /* consume */ }
+  assert.deepEqual(restored.messages[0].content.map(block => block.type), ['text', 'text', 'file', 'text', 'text', 'file', 'text'])
+  assert.equal(restored.messages[0].content[0], projected.messages[0].content[0])
+  assert.equal(restored.messages[0].content[2], first)
+  assert.equal(restored.messages[0].content[3], projected.messages[0].content[2])
+  assert.equal(restored.messages[0].content[5], second)
+  assert.equal(restored.messages[0].content[6], projected.messages[0].content[4])
+  assert.ok(restored.messages[0].content[1].text.startsWith(projected.messages[0].content[1].text), 'retain the exact original core note as a prefix')
+  assert.match(restored.messages[0].content[1].text, /\/execution\/read-only\/first\.pdf/)
+  assert.match(restored.messages[0].content[1].text, /verbatim read-only copy/)
+  assert.match(restored.messages[0].content[1].text, /copy it to a writable location/)
+  assert.ok(restored.messages[0].content[4].text.startsWith(projected.messages[0].content[3].text))
+  assert.match(restored.messages[0].content[4].text, /cannot access a readable path/)
+  for (const index of [1, 4]) {
+    assert.match(restored.messages[0].content[index].text, /original file is also attached natively/)
+    assert.match(restored.messages[0].content[index].text, /local-path note above concerns local file tools only/)
+  }
+  assert.equal(JSON.stringify([original, projected]), before)
+})
+
+test('a request that already contains native files retains one copy without manufacturing a path', async () => {
+  const original = request('already-native.pdf')
+  let restored
+  for await (const _ of withNativeFileContext(original, async function* () {
+    restored = restoreNativeFiles(original)
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })) { /* consume */ }
+  assert.equal(restored, original)
+  assert.equal(restored.messages[0].content.length, 1)
+  assert.equal(restored.messages[0].content[0].type, 'file')
 })
 
 test('concurrent native file contexts never exchange attachments and cleanup runs inside its own context', async () => {
@@ -58,10 +104,10 @@ test('concurrent native file contexts never exchange attachments and cleanup run
   const iter = r => withNativeFileContext(r, async function* () {
     await wait
     try {
-      seen.push(restoreNativeFiles(projected(r)).messages[0].content[0].attachment.name)
+      seen.push(restoreNativeFiles(projected(r)).messages[0].content[1].attachment.name)
       yield { type: 'finish', reason: { kind: 'stop' } }
     } finally {
-      seen.push(`cleanup:${restoreNativeFiles(projected(r)).messages[0].content[0].attachment.name}`)
+      seen.push(`cleanup:${restoreNativeFiles(projected(r)).messages[0].content[1].attachment.name}`)
     }
   })[Symbol.asyncIterator]()
   const one = iter(first)
@@ -158,9 +204,10 @@ test('actual rc.5 LlmRuntime sends verified attachment bytes through the native 
   const chunks = await collect(fixture.ctx.llm.stream({
     provider: 'google-ai-studio', model: 'gemini-2.5-flash', messages: [fixture.user],
   }))
-  assert.equal(chunks.at(-1).reason.kind, 'stop')
+  assert.equal(chunks.at(-1).reason.kind, 'stop', JSON.stringify(chunks.at(-1)))
   assert.equal(fixture.reads(), 1)
-  assert.deepEqual(fixture.calls[0].contents[0].parts[1], {
+  assert.match(fixture.calls[0].contents[0].parts[1].text, /cannot access a readable path/)
+  assert.deepEqual(fixture.calls[0].contents[0].parts[2], {
     inlineData: { mimeType: 'application/pdf', data: fixture.bytes.toString('base64') },
   })
   assert.equal(fixture.user.content[1].type, 'file')
@@ -186,16 +233,44 @@ test('actual rc.5 bridge retains core cross-provider replay isolation', async ()
   const fixture = runtimeFixture()
   class Foreign extends LlmAdapter { async *stream() { yield { type: 'finish', reason: { kind: 'stop' } } } }
   fixture.ctx.llm.registerAdapter(['foreign'], new Foreign())
-  const assistant = createAssistantMessage({ provider: 'foreign', model: 'foreign-model',
+  const assistant = createAssistantMessage({ source: { provider: 'foreign', model: 'foreign-model',
+    replayState: { response: { format: 'google-native-v1' }, blocks: [{ parts: [{ text: 'public text', thoughtSignature: 'PRIVATE_SIGNATURE' }] }] } },
     content: [{ type: 'text', text: 'public text' }],
-    replayState: { response: { format: 'google-native-v1' }, blocks: [{ parts: [{ text: 'public text', thoughtSignature: 'PRIVATE_SIGNATURE' }] }] },
   })
+  assert.ok(JSON.stringify(assistant).includes('PRIVATE_SIGNATURE'))
   const chunks = await collect(fixture.ctx.llm.stream({
     provider: 'google-ai-studio', model: 'gemini-2.5-flash', messages: [assistant, fixture.user],
   }))
   assert.equal(chunks.at(-1).reason.kind, 'stop')
   assert.ok(!JSON.stringify(fixture.calls[0]).includes('PRIVATE_SIGNATURE'))
-  assert.equal(fixture.calls[0].contents[1].parts[1].inlineData.mimeType, 'application/pdf')
+  assert.equal(fixture.calls[0].contents[1].parts[2].inlineData.mimeType, 'application/pdf')
+})
+
+test('actual rc.5 bridge keeps assistant media, text and function signatures byte-identical', async () => {
+  const fixture = runtimeFixture()
+  const thought = { type: 'reasoning', text: 'Recorded thought' }
+  const media = { type: 'file', attachment: { attachmentId: 'b'.repeat(64), name: 'generated.wav', bytes: 4 } }
+  const text = { type: 'text', text: 'Recorded answer' }
+  const call = { type: 'tool-call', id: 'local-call', name: 'inspect_file', arguments: '{"q":"next"}' }
+  const parts = [
+    { text: thought.text, thought: true, thoughtSignature: 'THOUGHT_SIGNATURE' },
+    { inlineData: { mimeType: 'audio/wav', data: 'AAECAw==' }, thoughtSignature: 'MEDIA_SIGNATURE' },
+    { text: text.text, thoughtSignature: 'TEXT_SIGNATURE' },
+    { functionCall: { id: 'native-call', name: call.name, args: { q: 'next' } }, thoughtSignature: 'CALL_SIGNATURE' },
+  ]
+  const content = [thought, media, text, call]
+  const assistant = createAssistantMessage({ content, source: { provider: 'google-ai-studio', model: 'gemini-2.5-flash',
+    replayState: { response: { format: 'google-native-v1' }, blocks: content.map((block, index) => ({ block, parts: [parts[index]] })) } },
+  })
+  const original = JSON.stringify(assistant)
+  const result = createToolResultMessage({ callId: call.id, content: [{ type: 'text', text: 'Done' }], isError: false })
+  const followup = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Continue' }] })
+  const chunks = await collect(fixture.ctx.llm.stream({ provider: 'google-ai-studio', model: 'gemini-2.5-flash', messages: [assistant, result, followup] }))
+  assert.equal(chunks.at(-1).reason.kind, 'stop', JSON.stringify(chunks.at(-1)))
+  assert.deepEqual(fixture.calls[0].contents[0].parts, parts)
+  assert.equal(fixture.calls[0].contents[1].parts[0].functionResponse.id, 'native-call')
+  assert.equal(fixture.reads(), 0, 'generated native media must replay without reading or reuploading storage')
+  assert.equal(JSON.stringify(assistant), original)
 })
 
 test('actual rc.5 bridge preserves pre-network reasoning validation and terminal error normalization', async () => {

@@ -56,7 +56,8 @@ export async function* withNativeFileContext(
   }
 }
 
-/** Restore files alone; all core-produced message/source changes are retained. */
+/** Keep core's local read-only handles alongside native input bytes. Assistant
+ * media retains its original block shape for exact provider replay. */
 export function restoreNativeFiles(options: GenerateOptions): GenerateOptions {
   const context = nativeFiles.getStore()
   const original = context?.options
@@ -75,10 +76,23 @@ export function restoreNativeFiles(options: GenerateOptions): GenerateOptions {
     if (projected.role !== source.role || projected.content.length !== source.content.length || changedCall) {
       throw new LlmError('dsh 文件投影与原消息不匹配；无法安全发送 Google 原生附件', 'NATIVE_FILE_BRIDGE_MISMATCH')
     }
+    let messageChanged = false
+    const content = projected.content.flatMap((block, index) => {
+      const originalBlock = source.content[index]
+      if (originalBlock.type !== 'file' || block.type === 'file') return [block]
+      messageChanged = true
+      if (source.role === 'assistant') return [originalBlock]
+      const localHint = block.type === 'text' ? {
+        ...block,
+        text: `${block.text}\nThe original file is also attached natively below. The local-path note above concerns local file tools only.`,
+      } : block
+      return [localHint, originalBlock]
+    })
+    if (!messageChanged) return projected
     changed = true
     return {
       ...projected,
-      content: projected.content.map((block, index) => source.content[index].type === 'file' ? source.content[index] : block),
+      content,
     } as RequestMessage
   })
   return changed ? { ...options, messages } : options

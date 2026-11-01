@@ -1,5 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { chmod, copyFile, link, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { LlmRuntime, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { GoogleNativeAdapter } from '../lib/adapter.js'
@@ -11,9 +15,10 @@ import { translateStream } from '../lib/stream.js'
 const provider = 'google-ai-studio'
 const model = 'gemini-2.5-flash'
 const choices = (change = {}) => ({ nativeFiles: true, search: false, urlContext: false, codeExecution: false, maps: false, ...change })
-const source = (selected, target = model) => ({ kind: 'user', googleNative: { version: 1, selections: [{ provider, model: target, choices: selected }] } })
+const source = (selected, target = model, route = provider) => ({ kind: 'user', googleNative: { version: 1, selections: [{ provider: route, model: target, choices: selected }] } })
 const pdf = Buffer.from('%PDF-1.7\nNative or local processing')
-const user = (selected, file = true) => createUserMessage({ source: source(selected), content: [
+const nativeClarification = 'The original file is also attached natively below. The local-path note above concerns local file tools only.'
+const user = (selected, file = true, route = provider) => createUserMessage({ source: source(selected, model, route), content: [
   { type: 'text', text: 'Read the document' },
   ...(file ? [{ type: 'file', attachment: { attachmentId: 'a'.repeat(64), name: 'input.pdf', bytes: pdf.length } }] : []),
 ] })
@@ -42,10 +47,79 @@ test('native file checkbox changes actual rc.5 file dispatch between verified by
     assert.equal(chunks.at(-1).reason.kind, 'stop')
     assert.equal(f.reads(), enabled ? 1 : 0)
     const parts = f.requests[0].contents[0].parts
-    if (enabled) assert.deepEqual(parts[1], { inlineData: { mimeType: 'application/pdf', data: pdf.toString('base64') } })
-    else { assert.equal(parts[1].inlineData, undefined); assert.match(parts[1].text, /input.pdf/) }
+    const native = parts.filter(part => part.inlineData)
+    assert.deepEqual(native, enabled ? [{ inlineData: { mimeType: 'application/pdf', data: pdf.toString('base64') } }] : [])
+    assert.equal(parts.filter(part => part.text?.includes('File "input.pdf"')).length, 1)
+    assert.match(parts[1].text, /cannot access a readable path/)
   }
 })
+
+for (const route of ['google-ai-studio', 'google-vertex-native']) for (const enabled of [false, true]) for (const mapped of [true, false]) {
+  test(`${route}: human ${enabled ? 'native' : 'normal'} upload keeps ${mapped ? 'usable read-only path guidance' : 'an honest unmapped-path warning'}`, async t => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-human-file-path-'))
+    const ctx = new Context()
+    t.after(async () => { await ctx.fiber.dispose(); await rm(directory, { recursive: true, force: true }) })
+    const hostPath = join(directory, 'host-immutable-object.pdf')
+    const mappedPath = join(directory, 'execution-readable-object.pdf')
+    await writeFile(hostPath, pdf, { mode: 0o444 })
+    await link(hostPath, mappedPath)
+    const attachment = { attachmentId: createHash('sha256').update(pdf).digest('hex'), name: 'input.pdf', bytes: pdf.length }
+    let reads = 0
+    new LlmRuntime(ctx)
+    ctx.provide('attachments', { fileHostPath: () => hostPath, async *readFileStream() { reads++; yield await readFile(hostPath) } })
+    ctx.provide('fs', { processPathFromHostPath: path => mapped && path === hostPath ? mappedPath : undefined })
+    const profiles = { [provider]: defaultProfile(provider), 'google-vertex-native': defaultProfile('google-vertex-native') }
+    profiles[route].vertexAuth = 'api-key'
+    profiles[route].baseURL = `https://offline.test/human/${route}`
+    const adapter = new GoogleNativeAdapter(ctx, { profiles: () => profiles, resolveApiKey: async () => 'offline-key' })
+    ctx.llm.registerAdapter(['google-ai-studio', 'google-vertex-native'], adapter)
+    registerNativeFileBridge(ctx)
+    const requests = []
+    t.mock.method(globalThis, 'fetch', async (url, init) => {
+      assert.match(String(url), /offline\.test/)
+      requests.push(JSON.parse(init.body))
+      return new Response(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: 'Received' }] }, finishReason: 'STOP' }] })}\n\n`, { headers: { 'content-type': 'text/event-stream' } })
+    })
+    const message = createUserMessage({ source: source(choices({ nativeFiles: enabled }), model, route), content: [
+      { type: 'text', text: 'Inspect the uploaded document.' }, { type: 'file', attachment },
+    ] })
+    const chunks = await collect(ctx.llm.stream({ provider: route, model, messages: [message] }))
+    assert.equal(chunks.at(-1).reason.kind, 'stop')
+    assert.equal(requests.length, 1)
+    assert.equal(reads, enabled ? 1 : 0)
+    const parts = requests[0].contents.flatMap(content => content.parts)
+    const native = parts.filter(part => part.inlineData)
+    assert.equal(native.length, enabled ? 1 : 0, 'the same occurrence uploads at most once')
+    if (enabled) assert.deepEqual(Buffer.from(native[0].inlineData.data, 'base64'), pdf)
+    const hints = parts.filter(part => part.text?.includes('File "input.pdf"'))
+    assert.equal(hints.length, 1)
+    const hint = hints[0].text
+    assert.equal(hint.includes(nativeClarification), enabled, 'only native inputs add the clarification about local file tools')
+    assert.equal(hint.includes(hostPath), false, 'an attachment-host path is never offered as an execution-world path')
+    if (mapped) {
+      assert.ok(hint.includes(mappedPath))
+      assert.match(hint, /verbatim read-only copy/)
+      assert.match(hint, /Read that path with your file tools/)
+      assert.match(hint, /copy it to a writable location before modifying it/)
+      const match = /verbatim read-only copy saved at ("(?:[^"\\]|\\.)*")/.exec(hint)
+      assert.ok(match)
+      const advertised = JSON.parse(match[1])
+      assert.equal((await stat(advertised)).mode & 0o222, 0)
+      assert.deepEqual(await readFile(advertised), pdf, 'file tools can read the advertised native-upload copy')
+      const writable = join(directory, 'copied-editable.pdf')
+      await copyFile(advertised, writable)
+      await chmod(writable, 0o600)
+      await writeFile(writable, Buffer.concat([pdf, Buffer.from('\nlocal edit')]))
+      assert.deepEqual(await readFile(advertised), pdf, 'editing the copied file leaves the stored original unchanged')
+      assert.deepEqual(await readFile(hostPath), pdf)
+    } else {
+      assert.match(hint, /cannot access a readable path/)
+      assert.match(hint, /do not claim to have read it/)
+      assert.equal(hint.includes(mappedPath), false)
+      assert.equal(hint.includes('copy saved at'), false)
+    }
+  })
+}
 
 test('later native-file changes preserve each old upload mode while applying the new mode to new files', async () => {
   const f = fixture()
