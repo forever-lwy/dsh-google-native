@@ -50,9 +50,12 @@ test('parallel function calls preserve native names/ids/signatures and match too
     { role: 'tool', toolCallId: 'synthetic-call', content: [{ type: 'text', text: 'found' }, { type: 'file', attachment: { attachmentId: 'native-file' } }] },
   ] }, files)
   assert.deepEqual(result.contents[0].parts, [nativePart])
-  assert.deepEqual(result.contents[1].parts, [{ functionResponse: {
-    name: 'lookup', response: { output: 'found' }, parts: [{ inlineData: { mimeType: 'application/pdf', data: 'native-file' } }],
-  } }])
+  assert.equal(result.contents[1].parts[0].functionResponse.name, 'lookup')
+  assert.match(result.contents[1].parts[0].functionResponse.response.output, /^found\nMedia returned/)
+  assert.equal(result.contents[1].parts[0].functionResponse.parts, undefined)
+  assert.equal(result.contents[1].parts.length, 1)
+  assert.match(result.contents[2].parts[0].text, /Media returned by lookup/)
+  assert.deepEqual(result.contents[2].parts[1], { inlineData: { mimeType: 'application/pdf', data: 'native-file' } })
 })
 
 test('native opaque output replays only with an identical recorded placeholder block', async () => {

@@ -141,9 +141,23 @@ export class GoogleChatControls extends TypertRemoteService {
 
   stamp(agent: Agent, message: UserMessage): void {
     if (message.source.kind !== 'user' || 'googleNative' in message.source) return
-    const source = { ...message.source, googleNative: this.capture(agent.session) }
-    const stamped = freezeMessage({ ...message, source })
-    agent.inbox.replace(message.id, stamped)
+    for (const [target, pending] of [['next-turn', agent.inbox.nextTurn], ['next-step', agent.inbox.nextStep]] as const) {
+      const index = pending.findIndex(candidate => candidate.id === message.id)
+      if (index < 0) continue
+      const current = pending[index]
+      if (current.source.kind !== 'user' || 'googleNative' in current.source) return
+      const source = { ...current.source, googleNative: this.capture(agent.session) }
+      const stamped = freezeMessage({ ...current, source })
+      // rc.5 Inbox.replace()/splice() describe deletion as cancellation and
+      // emit inbox/discarded. That retires the composer's image submission as
+      // failed, restoring a draft the Agent actually accepted. This is an
+      // annotation of the same pending identity, not cancellation: append the
+      // native atomic splice without its optional canceled outcome. The normal
+      // durable Inbox projection updates in place; rpcId, order and attachment
+      // references remain intact for observed retirement and file receipts.
+      agent.session.append('agent/inbox/spliced', { target, start: index, removedCount: 1, inserted: [stamped] })
+      return
+    }
   }
 }
 

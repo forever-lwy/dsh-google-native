@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, freezeMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, SessionStore, SessionSeq, buildForkSeed } from '@deepseek-ai/dsh-session'
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
 import { remoteMethods } from '@deepseek-ai/dsh-typert-protocol'
@@ -10,6 +10,7 @@ import { TypertGatewayService } from '@deepseek-ai/dsh-api-gateway'
 import { registerGoogleChatControls } from '../lib/chat-controls.js'
 import { chatRemoteInfo, readChatChoices } from '../lib/chat-remote.js'
 import { defaultProfile } from '../lib/config.js'
+import { ReactLoopInbox, inboxProjectionDefinition } from './helpers/real-inbox.mjs'
 
 const provider = 'google-ai-studio'
 const model = 'gemini-3.8-flash'
@@ -20,6 +21,7 @@ function fixture(seed = [], actualRegistry = false) {
   const ctx = new Context()
   new SessionStore(ctx)
   new SessionProjectionRegistry(ctx)
+  ctx.sessionProjections.register(inboxProjectionDefinition)
   const session = ctx.sessions.create(SessionId(`chat-test-${Math.random()}`), { seed })
   const profiles = { [provider]: defaultProfile(provider), 'google-vertex-native': defaultProfile('google-vertex-native') }
   let flushes = 0
@@ -27,14 +29,17 @@ function fixture(seed = [], actualRegistry = false) {
   const descriptors = []
   if (actualRegistry) new TypertRegistry(ctx)
   else ctx.provide('typert', { remotes: { register(info) { descriptors.push(...info.descriptors); return async () => {} } } })
-  const agent = { id: session.id, session, status: 'idle', inbox: { replace() { return false } } }
+  const agent = { id: session.id, session, status: 'idle' }
+  const notifications=[]
+  agent.inbox=new ReactLoopInbox(ctx.sessionProjections,session,{emit:(event,payload)=>notifications.push({event,...payload})})
   ctx.provide('sessionController', {
     async resolveAgent(id) { return id === session.id ? { agent } : { error: new Error('wrong session') } },
     async inspect() { throw new Error('wrong session') },
   })
   const controls = registerGoogleChatControls(ctx, () => profiles)
   const request = { sessionId: session.id, provider, model }
-  return { ctx, session, profiles, agent, controls, request, descriptors, flushes: () => flushes }
+  const enqueue=(message,target='next-turn')=>agent.inbox.append(target,message)
+  return { ctx, session, profiles, agent, controls, request, descriptors, enqueue, notifications, flushes: () => flushes }
 }
 
 test('per-session options save complete durable preferences and await the normal flush checkpoint', async () => {
@@ -57,17 +62,15 @@ test('enqueue captures immutable exact choices while retaining RPC identity, cal
   const instance = fixture()
   await instance.controls.set({ ...instance.request, choices, expectedRevision: 0 }, signal())
   const prompt = createUserMessage({ source: { kind: 'user', rpcId: 'rpc-original', principal: { kind: 'agent', id: 'caller' }, clientTimeZone: 'Asia/Shanghai' }, content: [{ type: 'text', text: 'Read attachment' }] })
-  let replacements = 0
-  let stamped
-  instance.agent.inbox.replace = (id, message) => {
-    replacements++
-    assert.equal(id, prompt.id)
-    stamped = message
-    instance.controls.stamp(instance.agent, message)
-    return true
-  }
+  instance.enqueue(prompt)
   instance.controls.stamp(instance.agent, prompt)
-  assert.equal(replacements, 1, 'replacement notifications cannot recursively restamp')
+  const stamped=instance.agent.inbox.nextTurn[0]
+  instance.controls.stamp(instance.agent,stamped)
+  instance.controls.stamp(instance.agent,prompt)
+  const annotations=instance.session.snapshotEvents().filter(event=>event.type==='agent/inbox/spliced'&&event.data.removedCount===1)
+  assert.equal(annotations.length,1,'reentrant annotations cannot stamp an already annotated pending identity')
+  assert.equal(annotations[0].data.outcome,undefined,'source annotation is not cancellation')
+  assert.equal(instance.notifications.filter(item=>item.event==='agent/inbox/discarded').length,0)
   assert.equal(stamped.id, prompt.id)
   assert.equal(stamped.source.rpcId, 'rpc-original')
   assert.deepEqual(stamped.source.principal, prompt.source.principal)
@@ -80,12 +83,42 @@ test('enqueue captures immutable exact choices while retaining RPC identity, cal
   assert.ok(!('googleNative' in prompt.source), 'original frozen input remains unchanged')
 })
 
+test('stamping preserves the current pending source, queue order and attachment references in either lane', () => {
+  for(const target of ['next-turn','next-step']){
+    const instance=fixture()
+    const before=createUserMessage({source:{kind:'user'},content:[{type:'text',text:'before'}]})
+    const original=createUserMessage({source:{kind:'user',rpcId:'stable-rpc'},content:[{type:'image',attachment:{attachmentId:'sha256:fixture',mediaType:'image/png',bytes:1,name:'test.png'}}]})
+    const current=freezeMessage({...original,source:{...original.source,otherPlugin:'retained'}})
+    const after=createUserMessage({source:{kind:'user'},content:[{type:'text',text:'after'}]})
+    instance.enqueue(before,target);instance.enqueue(current,target);instance.enqueue(after,target)
+    instance.controls.stamp(instance.agent,original)
+    const pending=target==='next-turn'?instance.agent.inbox.nextTurn:instance.agent.inbox.nextStep
+    assert.deepEqual(pending.map(item=>item.id),[before.id,original.id,after.id])
+    assert.equal(pending[1].source.otherPlugin,'retained')
+    assert.deepEqual(pending[1].content,original.content)
+    assert.deepEqual(pending[1].content[0].attachment,original.content[0].attachment)
+    assert.equal(instance.notifications.filter(item=>item.event==='agent/inbox/discarded').length,0)
+  }
+})
+
+test('late stamping cannot resurrect claimed or canceled messages', () => {
+  const instance=fixture()
+  const prompt=createUserMessage({source:{kind:'user',rpcId:'gone'},content:[{type:'text',text:'gone'}]})
+  instance.enqueue(prompt)
+  instance.agent.inbox.remove(prompt.id)
+  const seq=instance.session.seq
+  instance.controls.stamp(instance.agent,prompt)
+  assert.equal(instance.session.seq,seq)
+  assert.equal(instance.agent.inbox.hasPending,false)
+})
+
 test('serialized preferences and accepted prompt source survive restore and an actual fork seed', async () => {
   const instance = fixture()
   await instance.controls.set({ ...instance.request, choices, expectedRevision: 0 }, signal())
-  let stamped
-  instance.agent.inbox.replace = (_id, message) => { stamped = message; return true }
-  instance.controls.stamp(instance.agent, createUserMessage({ source: { kind: 'user', rpcId: 'rpc' }, content: [{ type: 'text', text: 'Hi' }] }))
+  const prompt=createUserMessage({ source: { kind: 'user', rpcId: 'rpc' }, content: [{ type: 'text', text: 'Hi' }] })
+  instance.enqueue(prompt);instance.controls.stamp(instance.agent,prompt)
+  const stamped=instance.agent.inbox.nextTurn[0]
+  instance.session.append('agent/inbox/spliced',{target:'next-turn',start:0,removedCount:1,inserted:[]})
   instance.session.append('user/message', stamped, { surfaceOp: 'append' })
   const seed = JSON.parse(JSON.stringify(instance.session.snapshotEvents()))
   const restored = fixture(seed)
@@ -129,9 +162,9 @@ test('strict Remote descriptors and method resources address only the requested 
 test('invalid capability descriptions fail closed in the durable source snapshot', () => {
   const instance = fixture()
   instance.profiles[provider].models.find(entry => entry.id === model).generationConfig = { tools: {} }
-  let stamped
-  instance.agent.inbox.replace = (_id, message) => { stamped = message; return true }
-  instance.controls.stamp(instance.agent, createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Hi' }] }))
+  const prompt=createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Hi' }] })
+  instance.enqueue(prompt);instance.controls.stamp(instance.agent,prompt)
+  const stamped=instance.agent.inbox.nextTurn[0]
   assert.deepEqual(readChatChoices(stamped.source, provider, model), { nativeFiles: false, search: false, urlContext: false, codeExecution: false, maps: false })
 })
 

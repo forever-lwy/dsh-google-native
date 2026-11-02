@@ -1,6 +1,10 @@
 # Google 原生供应商插件
 
-`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。待安装版本 `0.1.9` 针对 dsh `0.2.1-rc.5`，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
+`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。待安装版本 `0.1.10` 针对 dsh `0.2.1-rc.5`，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
+
+`0.1.10` 修复工具返回图片的兼容性：截图等工具产生的真实图片和媒体使用普通用户媒体输入通道，保留对应工具的结果与调用标识，不再依赖上游对多模态工具结果的支持。同一批工具返回的相同截图只附加一次；模型主动附加工作区图片、PTC 下一步输入和历史恢复继续保留原始字节与来源校验。
+
+手动上传图片后，成功发送的文字和附件不再被恢复到输入框。聊天选项记录不会将正常消息误标成取消；真正发送失败时仍保留草稿，等待发送期间新输入的内容也不会被清除。
 
 `0.1.9` 在原生文件输入旁保留 dsh 的本地只读路径与操作提示。模型可直接理解文件，同时用本地工具读取、处理或复制到工作区；普通上传、模型主动附加和 PTC 均保留这个入口。路径沿用当前执行环境的真实映射，不使用 Google 临时文件地址替代。
 
@@ -33,7 +37,7 @@ npm pack --pack-destination ../releases
 在 dsh 的“插件 → 添加插件”中输入下面的**容器路径**，由用户确认安装和启用：
 
 ```text
-/plugins/releases/dsh-google-native-0.1.9.tgz
+/plugins/releases/dsh-google-native-0.1.10.tgz
 ```
 
 不要使用 `link:` 将源码连接到日常 `web` profile。下一次测试应提升版本并生成新文件名。现有 HMR 可以应用用户主动安装的版本；只有界面明确提示 `restart-required` 才需要安排重启。dsh `0.2.1-rc.5` 普通“已安装”页面没有第三方插件通用更新按钮，不能将较新上游界面的行为视为已具备。

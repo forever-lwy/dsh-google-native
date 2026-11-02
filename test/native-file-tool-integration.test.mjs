@@ -497,3 +497,61 @@ for (const failure of ['late-cancel', 'inner-block', 'inner-file-removal', 'oute
     assert.equal(f.requests.length, 0)
   })
 }
+
+for (const provider of providers) {
+  test(provider + ': PTC self-attached PNG reaches the next same-model request and survives history replay with user uploads disabled', async t => {
+    const f = await fixture(t, { provider, mode: 'ptc', path: 'screen.png', bytes: png,
+      inputTypes: ['text', 'image'], nativeCapability: false })
+    const first = await f.generate()
+    assert.equal(inlineParts(f.requests[0].body).length, 0)
+    const result = await f.execute(toolCall(first))
+    assert.equal(result.isError, false, JSON.stringify(result))
+    assert.equal(f.injections.length, 1)
+    assert.equal(f.injections[0].source.kind, 'google-native-file')
+    assert.equal(f.injections[0].source.googleNativeFile.provider, provider)
+    assert.equal(f.injections[0].source.googleNativeFile.model, MODEL)
+    const durable = await f.restore()
+    await writeFile(join(f.directory, 'screen.png'), Buffer.from('source changed after capture'))
+    for (const step of [1, 2]) {
+      await f.generate(durable.session.deriveMessages(), step)
+      const body = f.requests[step].body
+      const parts = inlineParts(body)
+      assert.equal(parts.length, 1, 'the approved original PNG appears exactly once in a normal continuation')
+      assert.equal(parts[0].inlineData.mimeType, 'image/png')
+      assert.deepEqual(Buffer.from(parts[0].inlineData.data, 'base64'), png)
+      assert.ok(body.contents.flatMap(content => content.parts).every(part => !part.functionResponse?.parts))
+      assert.equal(requestText(body).split(nativeClarification).length - 1, 1)
+    }
+    assert.equal(f.writes.length, 1)
+    assert.deepEqual(f.parserReads, [])
+    assert.ok(f.requests.every(request => request.url.includes(MODEL)))
+  })
+
+  for (const mode of ['native', 'ptc']) for (const failure of [
+    'inner-block', 'inner-file-removal', 'late-cancel', ...(mode === 'ptc' ? ['outer-block'] : []),
+  ]) test(provider + ': ' + mode + ' ' + failure + ' cannot restore captured PNG bytes into the following model request', async t => {
+    const f = await fixture(t, { provider, mode, path: 'screen.png', bytes: png })
+    const controller = new AbortController()
+    const first = await f.generate()
+    if (mode === 'ptc' && failure === 'late-cancel') f.afterNested(() => controller.abort(new Error('cancel final PNG delivery')))
+    f.ctx.on('tools/post-execute', async (exec, _result, next) => {
+      if (exec.name === TOOL && failure === 'inner-block') return { kind: 'block', feedback: [{ type: 'text', text: 'PNG refused by policy' }] }
+      if (exec.name === TOOL && failure === 'inner-file-removal') return { kind: 'accept', content: [{ type: 'text', text: 'PNG bytes withheld by policy' }] }
+      if (exec.name === TOOL && mode === 'native' && failure === 'late-cancel') controller.abort(new Error('cancel final PNG delivery'))
+      if (exec.name === 'run_code' && failure === 'outer-block') return { kind: 'block', feedback: [{ type: 'text', text: 'PTC output refused by policy' }] }
+      return next()
+    })
+    const result = await f.execute(toolCall(first), controller.signal)
+    assert.equal(result.isError, failure !== 'inner-file-removal')
+    assert.equal(f.writes.length, 1, 'capture finished before the final policy/cancellation decision')
+    assert.equal(f.injections.length, 0)
+    const durable = await f.restore()
+    await f.generate(durable.session.deriveMessages(), 1)
+    assert.equal(f.requests.length, 2)
+    assert.equal(inlineParts(f.requests[1].body).length, 0)
+    assert.ok(f.requests[1].body.contents.flatMap(content => content.parts).every(part => !part.fileData && !part.functionResponse?.parts))
+    assert.deepEqual(f.readIds, [], 'an unapproved stored image is not read back for the model API')
+    assert.equal(requestText(f.requests[1].body).includes(nativeClarification), false)
+    assert.deepEqual(f.parserReads, [])
+  })
+}

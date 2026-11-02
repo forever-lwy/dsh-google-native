@@ -1,6 +1,6 @@
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, GenerateOptions, RequestMessage } from '@deepseek-ai/dsh-llm'
-import type { Content, Part, FunctionResponsePart } from '@google/genai'
+import type { Content, Part } from '@google/genai'
 import { assertNativeInputType, type NativeFileStore } from './files.js'
 import type { GoogleInputType } from './config.js'
 import { isVerifiedNativeFileResult } from './file-scope.js'
@@ -64,6 +64,11 @@ function parseArguments(value: string): Record<string, unknown> {
 interface CallIdentity { name: string; nativeId?: string }
 
 export async function translateMessages(options: GenerateOptions, files: NativeFileStore, inputTypes?: readonly GoogleInputType[]): Promise<{ contents: Content[]; systemInstruction?: Content }> {
+  const nativeFileCalls = new Set(options.messages.flatMap(message => message.role === 'assistant'
+    ? message.content.flatMap(block => block.type === 'tool-call' && block.name === NATIVE_FILE_TOOL ? [block.id] : [])
+    : []))
+  const unverifiedNativeFileResult = (message: RequestMessage): boolean => message.role === 'tool'
+    && nativeFileCalls.has(message.toolCallId) && !isVerifiedNativeFileResult(message, options)
   if (inputTypes !== undefined) {
     // Check the entire request before a preceding, allowed file starts an
     // upload. Assistant replay stays exact: its signatures and generated media
@@ -74,6 +79,7 @@ export async function translateMessages(options: GenerateOptions, files: NativeF
       for (let index = 0; index < message.content.length; index++) {
         const block = message.content[index]
         if (replay !== undefined && matchingReplayParts(block, replay[index]) !== undefined) continue
+        if (unverifiedNativeFileResult(message) && (block.type === 'image' || block.type === 'file')) continue
         if (block.type === 'image' && !block.offloaded) assertNativeInputType('image', inputTypes)
         else if (block.type === 'file') await files.validateInputType(block.attachment, inputTypes, options.signal)
         else if (block.type === 'text' || block.type === 'reasoning') assertNativeInputType('text', inputTypes)
@@ -83,6 +89,21 @@ export async function translateMessages(options: GenerateOptions, files: NativeF
   const contents: Content[] = []
   const system: Part[] = options.system === undefined ? [] : [{ text: options.system }]
   const calls = new Map<string, CallIdentity>()
+  let toolResponses: Part[] = []
+  let toolMedia: Part[] = []
+  const toolMediaIds = new Set<string>()
+  const flushToolResponses = (): void => {
+    if (toolResponses.length === 0) return
+    // Keep the full parallel response group in its own Content. Some proxies
+    // classify any Content containing functionResponse as a tool message and
+    // discard its other parts, so media must be a separate ordinary user
+    // Content, not just a sibling of functionResponse in the same Content.
+    contents.push({ role: 'user', parts: toolResponses })
+    if (toolMedia.length > 0) contents.push({ role: 'user', parts: toolMedia })
+    toolResponses = []
+    toolMedia = []
+    toolMediaIds.clear()
+  }
   for (const message of options.messages) {
     options.signal?.throwIfAborted()
     if (message.role === 'system') {
@@ -105,36 +126,41 @@ export async function translateMessages(options: GenerateOptions, files: NativeF
       const identity = calls.get(message.toolCallId)
       if (!identity) throw new LlmError('Tool result has no matching function call in Google conversation history.', 'INVALID_TOOL_RESULT')
       const text: string[] = []
-      const media: FunctionResponsePart[] = []
-      const nativeFiles = identity.name === NATIVE_FILE_TOOL && isVerifiedNativeFileResult(message, options)
-      const attached: Part[] = []
+      const unverified = unverifiedNativeFileResult(message)
+      let mediaCount = 0
       for (const block of message.content) {
         if (block.type === 'text' || block.type === 'reasoning') text.push(block.text)
-        else if (block.type === 'image') {
-          const part = block.offloaded ? undefined : await files.imagePart(block.attachment, options.signal, inputTypes)
-          if (part?.inlineData) media.push({ inlineData: part.inlineData })
-          else text.push(`[Image ${block.attachment.name ?? block.attachment.attachmentId} was offloaded.]`)
-        } else if (block.type === 'file') {
-          const part = await files.filePart(block.attachment, options.signal, inputTypes)
-          if (nativeFiles) attached.push(part)
-          else {
-            if (part.inlineData) media.push({ inlineData: part.inlineData })
-            if (part.fileData) media.push({ fileData: part.fileData })
+        else if (block.type === 'image' || block.type === 'file') {
+          if (unverified) {
+            text.push('[Native file tool media was omitted because its committed successful result could not be verified.]')
+            continue
           }
+          if (block.type === 'image' && block.offloaded) {
+            text.push(`[Image ${block.attachment.name ?? block.attachment.attachmentId} was offloaded.]`)
+            continue
+          }
+          mediaCount++
+          const key = `${block.type}:${block.attachment.attachmentId}`
+          if (toolMediaIds.has(key)) continue
+          const part = block.type === 'image'
+            ? await files.imagePart(block.attachment, options.signal, inputTypes)
+            : await files.filePart(block.attachment, options.signal, inputTypes)
+          toolMedia.push({ text: `Media returned by ${identity.name} (tool call ${JSON.stringify(message.toolCallId)}, attachment ${JSON.stringify(block.attachment.name ?? block.attachment.attachmentId)}). Treat this media as output of that tool call.` }, part)
+          toolMediaIds.add(key)
         } else throw new LlmError(`Unsupported tool result content type: ${block.type}.`, 'UNSUPPORTED_CONTENT')
       }
+      if (mediaCount > 0) text.push(message.isError
+        ? 'Media returned by this failed tool call is attached below as native user input for diagnosis; the call did not succeed.'
+        : 'Media returned by this tool call is attached below as native user input after the tool responses.')
       const functionResponse = {
         name: identity.name,
         ...(identity.nativeId === undefined ? {} : { id: identity.nativeId }),
-        response: { [message.isError ? 'error' : 'output']: text.join('\n')
-          || (nativeFiles ? 'The original file is attached as native user media in this conversation.' : '') },
-        ...(media.length === 0 ? {} : { parts: media }),
+        response: { [message.isError ? 'error' : 'output']: text.join('\n') },
       }
-      // Gemini 2.5 accepts ordinary user media; multimodal function responses
-      // are restricted to newer models. Keep the call result paired first.
-      appendContent(contents, 'user', [{ functionResponse }, ...attached])
+      toolResponses.push({ functionResponse })
       continue
     }
+    flushToolResponses()
     const parts: Part[] = []
     for (let i = 0; i < message.content.length; i++) {
       const block = message.content[i]
@@ -163,11 +189,14 @@ export async function translateMessages(options: GenerateOptions, files: NativeF
     }
     if (parts.length > 0) appendContent(contents, message.role === 'assistant' ? 'model' : 'user', parts)
   }
+  flushToolResponses()
   return { contents, ...(system.length > 0 ? { systemInstruction: { parts: system } } : {}) }
 }
 
 function appendContent(contents: Content[], role: 'user' | 'model', parts: Part[]): void {
   const previous = contents.at(-1)
-  if (previous?.role === role) previous.parts!.push(...parts)
+  // In particular, a PTC tool result followed by an injected user image must
+  // remain two Content items even though both use the Google 'user' role.
+  if (previous?.role === role && (role !== 'user' || !previous.parts?.some(part => part.functionResponse !== undefined))) previous.parts!.push(...parts)
   else contents.push({ role, parts })
 }
