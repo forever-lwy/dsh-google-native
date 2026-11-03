@@ -47,6 +47,60 @@ test('actual SDK resumable upload sends correct start URL, protocol headers, byt
   assert.equal(requests.length, 4, 'second request reuses valid uploaded file handle')
 })
 
+test('changing a file threshold uses inline audio instead of a cached upload while prepared calls keep their original settings', async t => {
+  const audio = Buffer.from('0000ftypmp42original M4A bytes')
+  const profiles = { [provider]: defaultProfile(provider), 'google-vertex-native': defaultProfile('google-vertex-native') }
+  profiles[provider].baseURL = 'https://gateway.example'
+  profiles[provider].files.inlineThresholdBytes = audio.length - 1
+  let starts = 0
+  let binaries = 0
+  const media = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const headers = new Headers(init.headers)
+    if (headers.get('x-goog-upload-command') === 'start') {
+      starts++
+      assert.equal(String(url), 'https://gateway.example/upload/v1beta/files')
+      assert.equal(headers.get('x-goog-upload-header-content-type'), 'audio/mp4')
+      assert.equal(headers.get('x-goog-upload-header-content-length'), String(audio.length))
+      return new Response('{}', { headers: { 'x-goog-upload-url': 'https://gateway.example/upload-session/audio' } })
+    }
+    if (headers.get('x-goog-upload-command')?.includes('finalize')) {
+      binaries++
+      assert.deepEqual(Buffer.from(await init.body.arrayBuffer()), audio)
+      return new Response(JSON.stringify({ file: {
+        name: 'files/audio', state: 'ACTIVE', uri: 'https://gateway.example/v1beta/files/audio', mimeType: 'audio/mp4',
+      } }), { headers: { 'x-goog-upload-status': 'final' } })
+    }
+    const body = JSON.parse(init.body)
+    media.push(body.contents.flatMap(content => content.parts).find(part => part.inlineData || part.fileData))
+    return new Response(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: 'Audio understood' }] }, finishReason: 'STOP' }] })}\n\n`, {
+      headers: { 'content-type': 'text/event-stream' },
+    })
+  })
+  const instance = new GoogleNativeAdapter({ attachments: { async *readFileStream() { yield audio } } }, {
+    profiles: () => profiles, resolveApiKey: async () => 'offline-key',
+  })
+  const request = { provider, model: 'gemini-2.5-flash', messages: [{ role: 'user', content: [
+    { type: 'file', attachment: { attachmentId: 'same-recording', name: 'meeting.m4a', bytes: audio.length } },
+  ] }] }
+  const prepared = await instance.prepareCall(provider, request.model)
+  await collect(instance.stream(request))
+  assert.deepEqual(media.at(-1), { fileData: { fileUri: 'https://gateway.example/v1beta/files/audio', mimeType: 'audio/mp4' } })
+  assert.equal(starts, 1)
+  assert.equal(binaries, 1)
+
+  profiles[provider].files.inlineThresholdBytes = audio.length
+  await collect(instance.stream(request))
+  assert.deepEqual(media.at(-1), { inlineData: { mimeType: 'audio/mp4', data: audio.toString('base64') } })
+  assert.equal(starts, 1, 'the newly configured connection must not upload or reuse the previous fileData handle')
+  assert.equal(binaries, 1)
+
+  await collect(prepared.stream(request))
+  assert.deepEqual(media.at(-1), { fileData: { fileUri: 'https://gateway.example/v1beta/files/audio', mimeType: 'audio/mp4' } })
+  assert.equal(starts, 1, 'already prepared calls retain their original connection and its valid upload handle')
+  assert.equal(binaries, 1)
+})
+
 for (const stage of ['start', 'upload']) {
   test(`actual SDK ${stage} request aborts during upload rather than continuing after cancellation`, async t => {
     const controller = new AbortController()

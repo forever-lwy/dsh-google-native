@@ -23,6 +23,59 @@ test('small PDF uses unchanged native inlineData bytes', async () => {
   assert.deepEqual(part, { inlineData: { mimeType: 'application/pdf', data: bytes.toString('base64') } })
 })
 
+test('AI Studio sends an audio file at the configured threshold inline and uploads it above that threshold', async () => {
+  const audio = Buffer.from('0000ftypmp42original M4A bytes')
+  const audioRef = ref(audio, 'meeting.m4a')
+  let uploads = 0
+  const client = { files: { async upload(input) {
+    uploads++
+    assert.deepEqual(await readFile(input.file), audio)
+    assert.equal(input.config.mimeType, 'audio/mp4')
+    return { name: 'files/meeting', state: 'ACTIVE', uri: 'https://files.example/meeting', mimeType: 'audio/mp4' }
+  } } }
+  const atThreshold = new NativeFileStore(client, 'ai-studio', attachmentStore(audio), {
+    inlineThresholdBytes: audio.length,
+    inlineMaxBytes: 1, // Vertex's limit must not override AI Studio's chosen threshold.
+    maxFileBytes: audio.length,
+  })
+  assert.deepEqual(await atThreshold.filePart(audioRef), {
+    inlineData: { mimeType: 'audio/mp4', data: audio.toString('base64') },
+  })
+  assert.equal(uploads, 0)
+  const aboveThreshold = new NativeFileStore(client, 'ai-studio', attachmentStore(audio), {
+    inlineThresholdBytes: audio.length - 1,
+    maxFileBytes: audio.length,
+  })
+  assert.deepEqual(await aboveThreshold.filePart(audioRef), {
+    fileData: { fileUri: 'https://files.example/meeting', mimeType: 'audio/mp4' },
+  })
+  assert.equal(uploads, 1)
+})
+
+test('Vertex accepts the configured inline boundary without using AI Studio upload settings', async () => {
+  const store = new NativeFileStore({}, 'vertex', attachmentStore(bytes), {
+    inlineThresholdBytes: 1,
+    inlineMaxBytes: bytes.length,
+    maxFileBytes: bytes.length,
+  })
+  assert.deepEqual(await store.filePart(ref(bytes)), {
+    inlineData: { mimeType: 'application/pdf', data: bytes.toString('base64') },
+  })
+})
+
+for (const backend of ['ai-studio', 'vertex']) {
+  test(`${backend} rejects files above the configured single-file limit before reading or uploading`, async () => {
+    let reads = 0
+    let uploads = 0
+    const store = new NativeFileStore({ files: { async upload() { uploads++ } } }, backend, {
+      async *readFileStream() { reads++; yield bytes },
+    }, { maxFileBytes: bytes.length - 1, inlineThresholdBytes: 1 })
+    await assert.rejects(store.filePart(ref(bytes)), error => error.code === 'FILE_TOO_LARGE')
+    assert.equal(reads, 0)
+    assert.equal(uploads, 0)
+  })
+}
+
 test('large AI Studio files are verified, uploaded, polled, cached and temporary files removed', async () => {
   let uploadedPath
   let uploads = 0

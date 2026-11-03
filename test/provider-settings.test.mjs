@@ -1,5 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { parse as parseYaml } from 'yaml'
 import { Context } from '@deepseek-ai/cordis'
 import { SettingsConflictError } from '@deepseek-ai/dsh-settings'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
@@ -9,6 +12,7 @@ import { defaultProfile, validateProfile } from '../lib/config.js'
 import { registerGoogleProviderSettings } from '../lib/provider-settings.js'
 import { providerRemoteInfo, providerSettingsSchema, ProviderSettingsRemoteError, saveProviderSettings } from '../lib/provider-remote.js'
 import { chatRemoteInfo } from '../lib/chat-remote.js'
+import { realSettingsProfile } from './helpers/real-settings-profile.mjs'
 
 const studio = 'google-ai-studio'
 const vertex = 'google-vertex-native'
@@ -84,6 +88,110 @@ test('settings read exposes safe connection and credential presence without read
   assert.equal(f.resolveCount(),0,'presence reads never resolve a plaintext secret')
   assert.doesNotMatch(JSON.stringify(result),/saved-test-secret|hidden-header-secret|hidden-config-value|generationConfig/)
   assert.equal(f.operations.length,0)
+})
+
+test('file settings expose effective byte defaults and only the three editable size limits', async () => {
+  const f = fixture()
+  f.profiles[studio].files = { inlineThresholdBytes: 67108864, pollIntervalMs: 777, processingTimeoutMs: 999999 }
+  const result = await f.service.get({}, signal())
+  assert.deepEqual(result.profiles[0].connection.files, {
+    inlineThresholdBytes: 67108864, inlineMaxBytes: 16777216, maxFileBytes: 314572800,
+  })
+  assert.deepEqual(result.profiles[1].connection.files, {
+    inlineThresholdBytes: 8388608, inlineMaxBytes: 16777216, maxFileBytes: 314572800,
+  })
+  assert.doesNotMatch(JSON.stringify(result), /pollIntervalMs|processingTimeoutMs/)
+  assert.equal(f.resolveCount(), 0)
+  assert.equal(f.operations.length, 0)
+})
+
+test('partial file size edits merge without changing processing options, model settings or the other provider', async () => {
+  const f = fixture()
+  f.profiles[studio].files = { inlineThresholdBytes: 8388608, inlineMaxBytes: 33554432,
+    maxFileBytes: 314572800, pollIntervalMs: 777, processingTimeoutMs: 999999 }
+  const originalFiles = structuredClone(f.profiles[studio].files)
+  const originalModels = structuredClone(f.profiles[studio].models)
+  const other = structuredClone(f.profiles[vertex])
+  const connection = { ...f.connection(studio), files: { inlineThresholdBytes: 67108864 } }
+  await f.service.discover({ provider: studio, connection }, signal())
+  assert.deepEqual(f.discovered[0].profile.files, { ...originalFiles, inlineThresholdBytes: 67108864 })
+  assert.deepEqual(f.profiles[studio].files, originalFiles, 'discovery only uses a draft')
+  const before = await f.service.get({}, signal())
+  const saved = await f.service.save({ provider: studio, connection, models: before.profiles[0].models,
+    expectedRevision: before.revision }, signal())
+  assert.equal(saved.profiles[0].connection.files.inlineThresholdBytes, 67108864)
+  assert.deepEqual(f.profiles[studio].files, { ...originalFiles, inlineThresholdBytes: 67108864 })
+  assert.deepEqual(f.profiles[studio].models, originalModels)
+  assert.deepEqual(f.profiles[vertex], other)
+  assert.deepEqual(f.operations[0].filter(op => op.path[1] === 'files'), [
+    { op: 'set', path: ['aiStudio', 'files', 'inlineThresholdBytes'], value: 67108864 },
+  ])
+})
+
+test('older clients and empty file patches retain existing file settings without adding defaults', async () => {
+  const f = fixture()
+  f.profiles[studio].files = { inlineThresholdBytes: 33554432, maxFileBytes: 134217728,
+    pollIntervalMs: 777, processingTimeoutMs: 999999 }
+  const existing = structuredClone(f.profiles[studio].files)
+  for (const files of [undefined, {}]) {
+    await f.service.save({ provider: studio, connection: { ...f.connection(studio), ...(files ? { files } : {}) },
+      models, expectedRevision: f.revision() }, signal())
+    assert.deepEqual(f.profiles[studio].files, existing)
+    assert.equal(f.operations.at(-1).some(op => op.path[1] === 'files'), false)
+  }
+})
+
+test('invalid file byte limits are rejected before discovery, settings writes or credential writes', async () => {
+  const f = fixture()
+  for (const field of ['inlineThresholdBytes', 'inlineMaxBytes', 'maxFileBytes']) {
+    for (const value of [0, -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, null, '67108864']) {
+      const request = { provider: studio, connection: { ...f.connection(studio), files: { [field]: value } },
+        apiKey: 'transient-only-key' }
+      await assert.rejects(f.service.discover(request, signal()), error => error.code === 'gateway/bad-request')
+      await assert.rejects(f.service.save({ ...request, models, expectedRevision: 4 }, signal()), error => error.code === 'gateway/bad-request')
+    }
+  }
+  for (const files of [null, [], { pollIntervalMs: 1 }, { unknown: 1 }]) {
+    await assert.rejects(f.service.save({ provider: studio, connection: { ...f.connection(studio), files },
+      models, expectedRevision: 4 }, signal()), error => error.code === 'gateway/bad-request')
+  }
+  assert.equal(f.discovered.length, 0)
+  assert.equal(f.operations.length, 0)
+  assert.equal(f.writes.length, 0)
+})
+
+test('real profile persists independent provider file limits and reloads them without replacing processing options', async t => {
+  const { ctx, dir } = await realSettingsProfile(t, { config: {
+    aiStudio: { files: { pollIntervalMs: 777, processingTimeoutMs: 999999 },
+      generationConfig: { temperature: 0.2 }, models: [{ id: 'custom-audio', inputTypes: ['text', 'audio'] }] },
+    vertex: { files: { inlineMaxBytes: 33554432, pollIntervalMs: 555 } },
+  } })
+  const entry = ctx.configEditor.entries().find(item => item.options.id === 'dsh-google-native')
+  const fiber = entry.fiber
+  let snapshot = await ctx.nativeGoogleSettings.get({}, signal())
+  for (const [provider, files] of [
+    [studio, { inlineThresholdBytes: 67108864, maxFileBytes: 268435456 }],
+    [vertex, { inlineMaxBytes: 50331648, maxFileBytes: 201326592 }],
+  ]) {
+    const before = snapshot.profiles.find(profile => profile.provider === provider)
+    snapshot = await ctx.nativeGoogleSettings.save({ provider, connection: { ...before.connection, files },
+      models: before.models, expectedRevision: snapshot.revision }, signal())
+  }
+  assert.equal(entry.fiber, fiber, 'file edits apply through the existing rc.5 settings fiber')
+  assert.deepEqual(fiber.config.aiStudio.get().files, {
+    inlineThresholdBytes: 67108864, maxFileBytes: 268435456, pollIntervalMs: 777, processingTimeoutMs: 999999,
+  })
+  assert.deepEqual(fiber.config.vertex.get().files, {
+    inlineMaxBytes: 50331648, maxFileBytes: 201326592, pollIntervalMs: 555,
+  })
+  assert.equal(fiber.config.aiStudio.get().generationConfig.temperature, 0.2)
+  const stored = parseYaml(await readFile(join(dir, 'cordis.patch.yml'), 'utf8'))
+  const persisted = stored.flatMap(operation => operation.insert ?? []).find(item => item.id === 'dsh-google-native')
+  assert.ok(persisted, 'the real settings writer retains the existing plugin entry')
+  const reloaded = await realSettingsProfile(t, { patches: stored })
+  const actual = await reloaded.ctx.nativeGoogleSettings.get({}, signal())
+  assert.deepEqual(actual.profiles.map(profile => profile.connection.files), snapshot.profiles.map(profile => profile.connection.files))
+  assert.deepEqual(actual.profiles[0].models[0].inputTypes, ['text', 'audio'])
 })
 
 test('discovery uses unsaved custom connection and transient key without persisting either', async () => {

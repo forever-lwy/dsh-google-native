@@ -6,6 +6,17 @@ export const providerIdSchema = z.enum(['google-ai-studio', 'google-vertex-nativ
 const optionalText = z.string().trim().max(2048).optional()
 /** Largest delay Node's timers can represent without clamping to one millisecond. */
 export const MAX_REQUEST_TIMEOUT_MS = 2_147_483_647
+export const DEFAULT_PROVIDER_FILE_LIMITS = {
+  inlineThresholdBytes: 8 * 1024 * 1024,
+  inlineMaxBytes: 16 * 1024 * 1024,
+  maxFileBytes: 300 * 1024 * 1024,
+} as const
+const optionalFileBytes = z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional()
+export const providerFileSettingsSchema = z.object({
+  inlineThresholdBytes: optionalFileBytes,
+  inlineMaxBytes: optionalFileBytes,
+  maxFileBytes: optionalFileBytes,
+}).strict()
 export const providerConnectionSchema = z.object({
   enabled: z.boolean(),
   apiKeyEnv: z.string().min(1).max(256).regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
@@ -14,6 +25,8 @@ export const providerConnectionSchema = z.object({
   baseURL: optionalText, apiVersion: z.string().trim().max(64).optional(),
   /** Model-generation deadline; omitted by older clients, zero disables it. */
   requestTimeoutMs: z.number().int().nonnegative().max(MAX_REQUEST_TIMEOUT_MS).optional(),
+  /** Byte limits are optional so older clients preserve all existing file settings. */
+  files: providerFileSettingsSchema.optional(),
 }).strict()
 export type GoogleProviderConnection = z.infer<typeof providerConnectionSchema>
 

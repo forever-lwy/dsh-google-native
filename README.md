@@ -1,6 +1,8 @@
 # Google 原生供应商插件
 
-`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。待安装版本 `0.1.10` 针对 dsh `0.2.1-rc.5`，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
+`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。待安装版本 `0.1.11` 针对 dsh `0.2.1-rc.5`，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
+
+`0.1.11` 在模型页的 **配置 Google 提供商** 中增加文件大小设置。AI Studio 可调整 **直接发送文件阈值（MiB）**，默认仍为 8；Vertex 可调整 **本地文件上限（MiB）**，默认仍为 16。两者都可调整 **单个文件附件大小上限（MiB）**，默认仍为 300。保存后后续请求使用新设置，刷新页面可恢复已保存的数值；正在执行的请求沿用准备时的配置。
 
 `0.1.10` 修复工具返回图片的兼容性：截图等工具产生的真实图片和媒体使用普通用户媒体输入通道，保留对应工具的结果与调用标识，不再依赖上游对多模态工具结果的支持。同一批工具返回的相同截图只附加一次；模型主动附加工作区图片、PTC 下一步输入和历史恢复继续保留原始字节与来源校验。
 
@@ -37,7 +39,7 @@ npm pack --pack-destination ../releases
 在 dsh 的“插件 → 添加插件”中输入下面的**容器路径**，由用户确认安装和启用：
 
 ```text
-/plugins/releases/dsh-google-native-0.1.10.tgz
+/plugins/releases/dsh-google-native-0.1.11.tgz
 ```
 
 不要使用 `link:` 将源码连接到日常 `web` profile。下一次测试应提升版本并生成新文件名。现有 HMR 可以应用用户主动安装的版本；只有界面明确提示 `restart-required` 才需要安排重启。dsh `0.2.1-rc.5` 普通“已安装”页面没有第三方插件通用更新按钮，不能将较新上游界面的行为视为已具备。
@@ -61,6 +63,7 @@ Git 来源发布需要固定完整 commit SHA，市场记录也应引用该 SHA�
 | [逐模型高级设置](examples/model-settings.yaml) | 上下文、最大输出 tokens、输入类型、原生响应类型、思考档位与模型级超时 |
 | [原生参数与思考档位](examples/native-parameters.yaml) | 模型目录、thinkingLevel、搜索和 URL Context |
 | [聊天能力声明](examples/chat-capabilities.yaml) | 为自定义模型声明可显示的原生选项，或隐藏个别选项 |
+| [文件大小设置](examples/file-limits.yaml) | 直接发送阈值、Vertex 本地文件上限和单文件上限；常用设置也可直接在模型页编辑 |
 
 AI Studio 使用 API key；标准 Vertex 使用 project/location 和 Application Default Credentials（ADC）或服务账号，Vertex Express 使用其专用 API key。`apiKeyEnv` 字段保存凭据引用名，不填真实 key；UI 的“新的 API Key”输入框负责写入凭据存储。未配置某个后端时可关闭“启用此供应商”。服务账号使用 `keyFile`；省略时由 Google SDK 读取 ADC。
 
@@ -236,6 +239,18 @@ Google 原生搜索返回 `groundingMetadata`，包括来源、支持片段、�
 插件对 Vertex 本地附件默认采用最高 16 MiB 的保守 inline 限制，更大文件需要通过程序化原生 SDK 请求传入具有读取权限的 Cloud Storage `gs://` URI。通用聊天附件不会自动上传到用户的 Cloud Storage。AI Studio Files API 的句柄不能直接视为 Vertex 通用文件句柄。
 
 `files` 可调整 `inlineThresholdBytes`、`inlineMaxBytes`、`maxFileBytes`、`pollIntervalMs`、`processingTimeoutMs`。这些设置控制插件传输策略；提高插件上限不会提高 Google 或 dsh 本身的限制。默认单文件上限为 300 MiB。
+
+在 **设置 → 模型 → 对应 Google 提供商 → 配置 Google 提供商** 中可直接编辑大小设置，界面单位为 MiB（1 MiB = 1,048,576 字节），底层配置仍保存字节数：
+
+| 设置 | AI Studio | Vertex |
+| --- | --- | --- |
+| 直接发送文件阈值 | 文件不超过阈值时直接随模型请求发送；超过时使用 Files API。默认 8 MiB | 不使用此分流阈值 |
+| 本地文件上限 | 不使用此限制 | 文件超过上限时拒绝，不会自动上传到 Cloud Storage。默认 16 MiB |
+| 单文件大小上限 | 超过上限时拒绝，优先于直接发送阈值。默认 300 MiB | 与本地文件上限同时生效，取较小者。默认 300 MiB |
+
+例如，测试约 56.8 MiB 的录音可将 AI Studio 的直接发送阈值设为 `64`，保存后重试。原始文件在请求中经过 Base64 编码，体积约增加三分之一，还要加上历史附件、提示词和工具定义；这个设置不保证中转或模型接受相应大小的请求。阈值按单个文件判断，插件没有将整个请求压缩、分段或改写成外部链接。普通图片附件仍沿用既有图片输入通道。
+
+只保存连接或模型设置时，已有的文件处理轮询间隔与超时设置继续保留。旧客户端没有提交文件大小字段时，也会保留原配置。底层 YAML 示例见[文件大小设置](examples/file-limits.yaml)，合并到既有插件条目即可，不要替换整个 profile 或新增重复条目。
 
 当前 Google GenerateContent 文件指南给出的典型限制为：inline 请求总 payload 100 MB、PDF 50 MB / 1000 页、Files API 单文件 2 GB（保存 48 小时）、外部 HTTPS 文件每项 15 MB。限制随后端、模型和输入方式变化，dsh 上传限制也可能更低。PDF/音视频在原生 API 可用并不保证某个模型接受所有 MIME 类型或大小。
 

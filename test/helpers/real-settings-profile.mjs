@@ -15,13 +15,13 @@ import * as plugin from '../../lib/index.js'
  * Only attachment bytes and the credential store are replaced. No running DSH
  * profile or inherited Google credentials can be reached through this fixture.
  */
-export async function realSettingsProfile(t, { credentials = true, config = {} } = {}) {
+export async function realSettingsProfile(t, { credentials = true, config = {}, patches: persistedPatches } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-google-settings-profile-'))
   const home = join(dir, 'home')
   const ctx = new Context()
   t.after(async () => { await ctx.fiber.dispose(); await rm(dir, { recursive: true, force: true }) })
   await mkdir(home)
-  const patches = [{ insert: [{ id: 'dsh-google-native', name: 'cordis:google-under-test', config }] }]
+  const patches = persistedPatches ?? [{ insert: [{ id: 'dsh-google-native', name: 'cordis:google-under-test', config }] }]
   await writeFile(join(dir, 'package.json'), JSON.stringify({ dsh: { profile: { bundles: [] } } }))
   await writeFile(join(dir, 'cordis.patch.yml'), JSON.stringify(patches))
   await writeFile(join(dir, 'root.yml'), '[]\n')

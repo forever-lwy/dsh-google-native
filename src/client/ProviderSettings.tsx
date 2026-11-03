@@ -4,7 +4,7 @@ import type {} from '@deepseek-ai/dsh-api-remote-access/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-models/client'
 import type {} from './provider-locales.js'
 import {
-  MAX_REQUEST_TIMEOUT_MS,
+  DEFAULT_PROVIDER_FILE_LIMITS, MAX_REQUEST_TIMEOUT_MS,
   type GoogleProviderConnection, type GoogleProviderModel, type GoogleProviderProfileView, type GoogleProviderSettings,
   type GoogleProviderDiscoverRequest, type GoogleProviderSaveRequest,
 } from '../provider-remote.js'
@@ -19,6 +19,8 @@ export interface ProviderSettingsFace {
   discover: (request: GoogleProviderDiscoverRequest, signal: AbortSignal) => Promise<{ models: ProviderModel[] }>
   save: (request: GoogleProviderSaveRequest, signal: AbortSignal) => Promise<ProviderSettingsSnapshot>
 }
+type FileSizeKey = keyof typeof DEFAULT_PROVIDER_FILE_LIMITS
+type FileSizeDraft = Record<FileSizeKey, string>
 interface Draft {
   connection: ProviderConnection
   models: ProviderModel[]
@@ -30,6 +32,8 @@ interface Draft {
   discovered: boolean
   timeoutSeconds: string
   timeoutBadInput: boolean
+  fileMiB: FileSizeDraft
+  fileBadInput: Partial<Record<FileSizeKey, boolean>>
   modelEdits: Record<string, ModelSettingsDraft>
 }
 type Props = PropsRuntime<'settings.models.provider-card'> & PropsLocale<'googleProviderSettings'> & ProviderSettingsFace
@@ -41,7 +45,43 @@ function initialDraft(profile: ProviderProfile): Draft {
   return { connection: { ...profile.connection }, models: profile.models.map(model => ({ ...model })),
     savedModels: Object.fromEntries(profile.models.map(model => [model.id, model])),
     selected: profile.models.map(model => model.id), apiKey: '', filter: '', manual: '', discovered: false,
-    timeoutSeconds: String((profile.connection.requestTimeoutMs ?? 0) / 1000), timeoutBadInput: false, modelEdits: {} }
+    timeoutSeconds: String((profile.connection.requestTimeoutMs ?? 0) / 1000), timeoutBadInput: false,
+    fileMiB: Object.fromEntries(Object.entries(DEFAULT_PROVIDER_FILE_LIMITS).map(([key, fallback]) =>
+      [key, fileSizeMiB(profile.connection.files?.[key as FileSizeKey] ?? fallback)])) as FileSizeDraft,
+    fileBadInput: {}, modelEdits: {} }
+}
+
+const MiB = 1_048_576
+
+/** MiB fractions terminate within twenty decimal places; retain every stored byte. */
+function fileSizeMiB(bytes: number): string {
+  const value = BigInt(bytes)
+  const fraction = ((value % BigInt(MiB)) * 5n ** 20n).toString().padStart(20, '0').replace(/0+$/, '')
+  return `${value / BigInt(MiB)}${fraction ? `.${fraction}` : ''}`
+}
+
+/** Reject fractions of a byte instead of silently rounding the user's limit. */
+function fileSizeBytes(mib: string): number | undefined {
+  const value = mib.trim()
+  if (value.length > 64) return undefined
+  const match = /^(\d+)(?:\.(\d{1,20}))?$/.exec(value)
+  if (!match) return undefined
+  const fraction = match[2] ?? ''
+  const numerator = BigInt(`${match[1]}${fraction}`) * BigInt(MiB)
+  const denominator = 10n ** BigInt(fraction.length)
+  if (numerator % denominator !== 0n) return undefined
+  const bytes = numerator / denominator
+  return bytes > 0n && bytes <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(bytes) : undefined
+}
+
+function connectionWithFileSizes(draft: Draft, keys: FileSizeKey[], timeoutMs: number): ProviderConnection {
+  const updates = Object.fromEntries(keys.flatMap(key => {
+    const bytes = fileSizeBytes(draft.fileMiB[key])
+    return bytes !== undefined && bytes !== (draft.connection.files?.[key] ?? DEFAULT_PROVIDER_FILE_LIMITS[key]) ? [[key, bytes]] : []
+  }))
+  return { ...draft.connection, requestTimeoutMs: timeoutMs,
+    ...(Object.keys(updates).length ? { files: { ...draft.connection.files, ...updates } } : {}),
+  }
 }
 
 /** Decimal seconds preserve existing millisecond precision without floating-point rounding. */
@@ -173,12 +213,16 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
   const selected = new Set(draft?.selected ?? [])
   const timeoutMs = draft ? requestTimeoutMs(draft.timeoutSeconds) : undefined
   const validTimeout = timeoutMs !== undefined && draft?.timeoutBadInput === false
+  const fileSizeKeys: FileSizeKey[] = [provider === 'google-ai-studio' ? 'inlineThresholdBytes' : 'inlineMaxBytes', 'maxFileBytes']
+  const validFiles = draft !== undefined && fileSizeKeys.every(key => !draft.fileBadInput[key] && fileSizeBytes(draft.fileMiB[key]) !== undefined)
+  const changedFiles = draft !== undefined && profile !== undefined && fileSizeKeys.some(key =>
+    fileSizeBytes(draft.fileMiB[key]) !== (profile.connection.files?.[key] ?? DEFAULT_PROVIDER_FILE_LIMITS[key]))
   const invalidModels = draft?.models.filter(model => selected.has(model.id)
     && parseModelSettings(entry(draft.modelEdits, model.id) ?? initialModelSettings(model)) === undefined) ?? []
   const validModels = invalidModels.length === 0
   const changedModels = draft?.models.some(model => selected.has(model.id) && Object.keys(modelPatch(draft, model) ?? {}).length > 0) ?? false
   const dirty = draft !== undefined && profile !== undefined && (draft.apiKey.trim().length > 0
-    || !validModels || changedModels
+    || !validModels || changedModels || !validFiles || changedFiles
     || !validTimeout || timeoutMs !== (profile.connection.requestTimeoutMs ?? 0)
     || JSON.stringify(draft.connection) !== JSON.stringify(profile.connection)
     || JSON.stringify([...draft.selected].sort()) !== JSON.stringify(profile.models.map(model => model.id).sort()))
@@ -193,14 +237,14 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
   }))
 
   const fetchModels = async () => {
-    if (!draft || busy || !canDiscover || !validTimeout) return
+    if (!draft || busy || !canDiscover || !validTimeout || !validFiles) return
     const current = ++generation.current
     const target = provider
     const controller = new AbortController()
     operation.current = controller
     setStatus('discovering')
     try {
-      const value = await discover({ provider: target, connection: { ...draft.connection, requestTimeoutMs: timeoutMs }, ...(draft.apiKey.trim() ? { apiKey: draft.apiKey.trim() } : {}) }, controller.signal)
+      const value = await discover({ provider: target, connection: connectionWithFileSizes(draft, fileSizeKeys, timeoutMs), ...(draft.apiKey.trim() ? { apiKey: draft.apiKey.trim() } : {}) }, controller.signal)
       if (controller.signal.aborted || current !== generation.current) return
       setDrafts(previous => {
         const old = previous[target]
@@ -231,14 +275,14 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
   }
 
   const saveSettings = async () => {
-    if (!draft || !snapshot || !editable || !dirty || !validTimeout || !validModels) return
+    if (!draft || !snapshot || !editable || !dirty || !validTimeout || !validFiles || !validModels) return
     const current = ++generation.current
     const target = provider
     const controller = new AbortController()
     operation.current = controller
     setStatus('saving')
     try {
-      const value = await save({ provider: target, connection: { ...draft.connection, requestTimeoutMs: timeoutMs }, models: selectedModels(draft),
+      const value = await save({ provider: target, connection: connectionWithFileSizes(draft, fileSizeKeys, timeoutMs), models: selectedModels(draft),
         ...(draft.apiKey.trim() ? { apiKey: draft.apiKey.trim() } : {}), expectedRevision: snapshot.revision }, controller.signal)
       if (controller.signal.aborted || current !== generation.current) return
       setSnapshot(value)
@@ -279,6 +323,22 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
     {hint && <span className="dsh-google-provider-hint">{t(hint)}</span>}
   </label>
 
+  const fileField = (key: FileSizeKey, label: Parameters<typeof t>[0], hint: Parameters<typeof t>[0]) => {
+    const valid = !draft.fileBadInput[key] && fileSizeBytes(draft.fileMiB[key]) !== undefined
+    return <label className="dsh-google-provider-field">
+      <span>{t(label)}</span>
+      <input type="number" value={draft.fileMiB[key]} disabled={!editable} min={1 / MiB} max={Number.MAX_SAFE_INTEGER / MiB} step="any"
+        aria-invalid={!valid} aria-describedby={`${baseId}-${key}-hint${valid ? '' : ` ${baseId}-${key}-error`}`}
+        data-google-setting={`${key}MiB`} onChange={event => {
+          const value = event.currentTarget.value
+          const badInput = event.currentTarget.validity.badInput
+          patchDraft(old => ({ ...old, fileMiB: { ...old.fileMiB, [key]: value }, fileBadInput: { ...old.fileBadInput, [key]: badInput } }))
+        }}/>
+      <span id={`${baseId}-${key}-hint`} className="dsh-google-provider-hint">{t(hint)}</span>
+      {!valid && <span id={`${baseId}-${key}-error`} role="alert" className="dsh-google-provider-hint dsh-google-provider-error">{t('fileSizeError')}</span>}
+    </label>
+  }
+
   return <div className="dsh-google-provider-settings" data-google-provider-settings>
     <div id={`${baseId}-panel`} role="region" aria-label={provider === 'google-ai-studio' ? t('aiStudio') : t('vertex')}>
       {(!canSave || !snapshot.writable) && <p className="dsh-google-provider-hint">{t('readOnly')}</p>}
@@ -316,7 +376,17 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
           </label>
         </>}
       </div>
-      <div className="dsh-google-provider-discover"><button type="button" className="dsh-google-provider-button" disabled={busy || !canDiscover || !validTimeout} onClick={() => { void fetchModels() }}>
+      <section className="dsh-google-provider-model-section" aria-label={t('fileSettings')}>
+        <div className="dsh-google-provider-model-heading"><h3>{t('fileSettings')}</h3></div>
+        <div className="dsh-google-provider-grid">
+          {provider === 'google-ai-studio'
+            ? fileField('inlineThresholdBytes', 'inlineThreshold', 'inlineThresholdHint')
+            : fileField('inlineMaxBytes', 'inlineMax', 'inlineMaxHint')}
+          {fileField('maxFileBytes', 'maxFileSize', 'maxFileSizeHint')}
+        </div>
+        <p className="dsh-google-provider-hint">{t('fileSizeHint')}</p>
+      </section>
+      <div className="dsh-google-provider-discover"><button type="button" className="dsh-google-provider-button" disabled={busy || !canDiscover || !validTimeout || !validFiles} onClick={() => { void fetchModels() }}>
         {status === 'discovering' ? t('discovering') : t('discover')}
       </button><span className="dsh-google-provider-hint">{t('discoverHint')}</span></div>
       {status === 'discover-error' && <p role="alert" className="dsh-google-provider-status dsh-google-provider-error">{t('discoverError')}</p>}
@@ -366,7 +436,7 @@ export function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t,
         {!validModels && <p role="alert" className="dsh-google-provider-model-summary-error">{t('selectedModelsError')} {invalidModels.map(model => model.name ?? model.id).join(', ')}</p>}
       </section>
       <div className="dsh-google-provider-footer">
-        <button type="button" className="dsh-google-provider-button dsh-google-provider-primary" disabled={!editable || !dirty || !validTimeout || !validModels} onClick={() => { void saveSettings() }}>{status === 'saving' ? t('saving') : t('save')}</button>
+        <button type="button" className="dsh-google-provider-button dsh-google-provider-primary" disabled={!editable || !dirty || !validTimeout || !validFiles || !validModels} onClick={() => { void saveSettings() }}>{status === 'saving' ? t('saving') : t('save')}</button>
         {dirty && <span className="dsh-google-provider-hint">{t('unsaved')}</span>}
         {(status === 'save-error' || status === 'credential-error' || status === 'conflict-error') && <button type="button" className="dsh-google-provider-button" onClick={() => setReload(value => value + 1)}>{t('retry')}</button>}
       </div>

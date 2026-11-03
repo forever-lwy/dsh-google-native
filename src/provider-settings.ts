@@ -10,7 +10,7 @@ import { DEFAULT_MODELS, GOOGLE_PROVIDERS, validateProfile, type GoogleModelConf
 import { resolveCapabilities } from './capabilities.js'
 import { withoutRawModelOverrides } from './native-overrides.js'
 import {
-  providerRemoteInfo, providerReadRequestSchema, providerDiscoverRequestSchema, providerSaveRequestSchema, providerDiscoverySchema,
+  DEFAULT_PROVIDER_FILE_LIMITS, providerRemoteInfo, providerReadRequestSchema, providerDiscoverRequestSchema, providerSaveRequestSchema, providerDiscoverySchema,
   type GoogleProviderConnection, type GoogleProviderModel, type GoogleProviderSettings, type GoogleModelAdvanced,
   type GoogleProviderReadRequest, type GoogleProviderDiscoverRequest, type GoogleProviderSaveRequest,
 } from './provider-remote.js'
@@ -25,6 +25,7 @@ export interface GoogleProviderSettingsOptions {
 
 const connectionKeys = ['enabled', 'apiKeyEnv', 'vertexAuth', 'project', 'location', 'keyFile', 'baseURL', 'apiVersion'] as const
 const optionalConnectionKeys = ['project', 'location', 'keyFile', 'baseURL', 'apiVersion'] as const
+const fileSizeKeys = ['inlineThresholdBytes', 'inlineMaxBytes', 'maxFileBytes'] as const
 const profilePath = (provider: GoogleProfile['provider']) => provider === 'google-ai-studio' ? 'aiStudio' : 'vertex'
 
 function parseRequest<T>(schema: z.ZodType<T>, value: unknown): T {
@@ -37,6 +38,11 @@ function viewConnection(profile: GoogleProfile): GoogleProviderConnection {
   const connection: GoogleProviderConnection = { enabled: profile.enabled, apiKeyEnv: profile.apiKeyEnv, vertexAuth: profile.vertexAuth }
   for (const key of optionalConnectionKeys) if (profile[key]) connection[key] = profile[key]
   if (profile.generationConfig.httpOptions?.timeout !== undefined) connection.requestTimeoutMs = profile.generationConfig.httpOptions.timeout
+  connection.files = {
+    inlineThresholdBytes: profile.files.inlineThresholdBytes ?? DEFAULT_PROVIDER_FILE_LIMITS.inlineThresholdBytes,
+    inlineMaxBytes: profile.files.inlineMaxBytes ?? DEFAULT_PROVIDER_FILE_LIMITS.inlineMaxBytes,
+    maxFileBytes: profile.files.maxFileBytes ?? DEFAULT_PROVIDER_FILE_LIMITS.maxFileBytes,
+  }
   return connection
 }
 
@@ -239,8 +245,11 @@ export class GoogleProviderSettingsService extends TypertRemoteService {
   private draft(provider: GoogleProfile['provider'], connection: GoogleProviderConnection, models?: GoogleProviderModel[]): GoogleProfile {
     try {
       const current = this.options.profiles()[provider]
-      const { requestTimeoutMs, ...connectionValues } = connection
+      const { requestTimeoutMs, files, ...connectionValues } = connection
       const draft = { ...structuredClone(current), ...connectionValues }
+      for (const key of fileSizeKeys) {
+        if (files?.[key] !== undefined) draft.files[key] = files[key]
+      }
       if (requestTimeoutMs !== undefined) draft.generationConfig = { ...draft.generationConfig,
         httpOptions: { ...draft.generationConfig.httpOptions, timeout: requestTimeoutMs },
       }
@@ -327,6 +336,12 @@ export class GoogleProviderSettingsService extends TypertRemoteService {
     if (request.connection.requestTimeoutMs !== undefined) ops.push({ op: 'set',
       path: [base, 'generationConfig', 'httpOptions', 'timeout'], value: request.connection.requestTimeoutMs,
     })
+    // Only editable limits are patched. Processing options and values omitted
+    // by an older or partially editing client retain their current settings.
+    for (const key of fileSizeKeys) {
+      const value = request.connection.files?.[key]
+      if (value !== undefined) ops.push({ op: 'set', path: [base, 'files', key], value })
+    }
     signal.throwIfAborted()
     try { await this.ctx.settings.mutate(this.options.settingsNs, ops, request.expectedRevision) }
     catch (error) {

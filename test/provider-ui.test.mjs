@@ -190,6 +190,108 @@ describe('provider connection and model-selection settings in an actual DOM', ()
     assert.equal(f.field('requestTimeoutSeconds').value, '600')
   })
 
+  test('legacy snapshots show file defaults without becoming dirty and expose only the active backend limit', async t => {
+    const first = await mount(t)
+    assert.equal(first.field('inlineThresholdBytesMiB').value, '8')
+    assert.equal(first.field('maxFileBytesMiB').value, '300')
+    assert.equal(first.field('inlineMaxBytesMiB'), null)
+    assert.equal(first.button('save').disabled, true)
+    const other = await mount(t, { provider: vertex })
+    assert.equal(other.field('inlineMaxBytesMiB').value, '16')
+    assert.equal(other.field('maxFileBytesMiB').value, '300')
+    assert.equal(other.field('inlineThresholdBytesMiB'), null)
+    assert.equal(other.button('save').disabled, true)
+  })
+
+  test('file limits use MiB in the form, save exact bytes, reload and remain independent for each provider', async t => {
+    let state = snapshot()
+    const options = { read: async () => state, save: async request => {
+      state = { ...state, revision: state.revision + 1,
+        profiles: state.profiles.map(profile => profile.provider === request.provider
+          ? { ...profile, connection: request.connection, models: request.models } : profile) }
+      return state
+    } }
+    const first = await mount(t, options)
+    await first.change(first.field('inlineThresholdBytesMiB'), '64')
+    assert.equal(first.button('save').disabled, false)
+    await first.click(first.button('discover'))
+    assert.deepEqual(first.discoveries[0].request.connection.files, { inlineThresholdBytes: 67108864 })
+    assert.equal(state.profiles[0].connection.files, undefined, 'editing and discovery do not persist a new limit')
+    await first.click(first.button('save'))
+    assert.equal(first.saves[0].request.connection.files.inlineThresholdBytes, 67108864)
+    assert.equal(first.field('inlineThresholdBytesMiB').value, '64')
+    assert.equal(first.button('save').disabled, true)
+    const reload = await mount(t, options)
+    assert.equal(reload.field('inlineThresholdBytesMiB').value, '64')
+    const other = await mount(t, { ...options, provider: vertex })
+    assert.equal(other.field('inlineMaxBytesMiB').value, '16')
+    await other.change(other.field('inlineMaxBytesMiB'), '32')
+    await other.change(other.field('maxFileBytesMiB'), '512')
+    await other.click(other.button('save'))
+    assert.deepEqual(state.profiles[1].connection.files, { inlineMaxBytes: 33554432, maxFileBytes: 536870912 })
+    assert.deepEqual(state.profiles[0].connection.files, { inlineThresholdBytes: 67108864 })
+    const vertexReload = await mount(t, { ...options, provider: vertex })
+    assert.equal(vertexReload.field('inlineMaxBytesMiB').value, '32')
+    assert.equal(vertexReload.field('maxFileBytesMiB').value, '512')
+  })
+
+  test('invalid file sizes prevent discovery and Save, including fractions of a byte and unsafe byte counts', async t => {
+    const f = await mount(t)
+    for (const key of ['inlineThresholdBytesMiB', 'maxFileBytesMiB']) {
+      for (const value of ['', '0', '-1', '0.0000001', '8589934592', '1e50']) {
+        await f.change(f.field(key), value)
+        assert.equal(f.field(key).getAttribute('aria-invalid'), 'true', `${key}=${value}`)
+        assert.match(f.container.textContent, /fileSizeError/)
+        assert.equal(f.button('save').disabled, true, `${key}=${value}`)
+        assert.equal(f.button('discover').disabled, true, `${key}=${value}`)
+        await f.click(f.button('save'))
+        await f.click(f.button('discover'))
+      }
+      await f.change(f.field(key), key === 'maxFileBytesMiB' ? '300' : '8')
+    }
+    assert.equal(f.saves.length, 0)
+    assert.equal(f.discoveries.length, 0)
+    assert.equal(f.button('save').disabled, true, 'returning both limits to their defaults clears the draft change')
+    await f.change(f.field('inlineThresholdBytesMiB'), '1.5')
+    assert.equal(f.field('inlineThresholdBytesMiB').getAttribute('aria-invalid'), 'false')
+    await f.click(f.button('save'))
+    assert.equal(f.saves[0].request.connection.files.inlineThresholdBytes, 1572864)
+  })
+
+  test('existing non-MiB byte limits remain exact during unrelated edits and can represent a single byte', async t => {
+    const state = snapshot()
+    state.profiles[0].connection.files = { inlineThresholdBytes: 8388609, inlineMaxBytes: 1, maxFileBytes: Number.MAX_SAFE_INTEGER }
+    const f = await mount(t, { snapshot: state })
+    assert.equal(f.field('inlineThresholdBytesMiB').value, '8.00000095367431640625')
+    assert.equal(f.field('maxFileBytesMiB').value, '8589934591.99999904632568359375')
+    assert.equal(f.field('maxFileBytesMiB').getAttribute('aria-invalid'), 'false')
+    assert.equal(f.button('save').disabled, true)
+    await f.change(f.field('baseURL'), 'https://other.example')
+    await f.click(f.button('save'))
+    assert.deepEqual(f.saves[0].request.connection.files, state.profiles[0].connection.files)
+    await f.change(f.field('inlineThresholdBytesMiB'), '0.00000095367431640625')
+    await f.click(f.button('save'))
+    assert.equal(f.saves[1].request.connection.files.inlineThresholdBytes, 1)
+    assert.equal(f.saves[1].request.connection.files.maxFileBytes, Number.MAX_SAFE_INTEGER)
+  })
+
+  test('file limit edits remain disabled while Save is pending and read-only access cannot edit them', async t => {
+    const pending = deferred()
+    const f = await mount(t, { save: () => pending.promise })
+    await f.change(f.field('inlineThresholdBytesMiB'), '64')
+    await f.click(f.button('save'))
+    assert.equal(f.field('inlineThresholdBytesMiB').disabled, true)
+    assert.equal(f.field('maxFileBytesMiB').disabled, true)
+    assert.equal(f.button('discover').disabled, true)
+    await f.flush(() => pending.resolve(snapshot({ revision: 4, profiles: snapshot().profiles.map(profile => profile.provider === studio
+      ? { ...profile, connection: { ...profile.connection, files: { inlineThresholdBytes: 67108864 } } } : profile) })))
+    assert.equal(f.field('inlineThresholdBytesMiB').disabled, false)
+    assert.equal(f.field('inlineThresholdBytesMiB').value, '64')
+    const readonly = await mount(t, { access: { 'nativeGoogleSettings/save': false } })
+    assert.equal(readonly.field('inlineThresholdBytesMiB').disabled, true)
+    assert.equal(readonly.field('maxFileBytesMiB').disabled, true)
+  })
+
   test('models omitted by upstream remain selected, and selecting filtered results keeps other selections', async t => {
     const f = await mount(t)
     await f.click(f.button('discover'))

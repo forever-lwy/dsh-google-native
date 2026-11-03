@@ -1,0 +1,19 @@
+# 合并到已有 id: dsh-google-native 条目，保留模型、连接、凭据引用及其他配置。
+# 界面以 MiB 编辑，以下底层参数单位为字节；1 MiB = 1048576 字节。
+# 此例将 AI Studio 直接发送阈值设为 64 MiB，供手动测试中转可接受的请求大小。
+# 默认值为 8 MiB（8388608）；提高阈值不会提高上游或 dsh 的实际大小上限。
+- id: dsh-google-native
+  config:
+    aiStudio:
+      files:
+        inlineThresholdBytes: 67108864
+        maxFileBytes: 314572800
+    vertex:
+      files:
+        inlineMaxBytes: 16777216
+        maxFileBytes: 314572800
+
+# AI Studio：单文件 <= inlineThresholdBytes 时直接发送，超过后调用 Files API。
+# Vertex：超过 inlineMaxBytes 时拒绝；不会自动上传 Cloud Storage。
+# 两者：超过 maxFileBytes 时拒绝；省略的轮询与处理超时参数保持原配置。
+# Base64 会使请求体积约增加三分之一，还需计入历史内容与其他附件。
