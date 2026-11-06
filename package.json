@@ -1,6 +1,6 @@
 {
-  "name": "dsh-google-native",
-  "version": "0.1.12",
+  "name": "@forever-lwy/dsh-google-native",
+  "version": "0.1.13",
   "description": "Native Google Gemini AI Studio and Vertex AI provider for DeepSeek Harness",
   "type": "module",
   "main": "lib/index.js",
@@ -23,6 +23,10 @@
     "cordis.patch.yml"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/forever-lwy/dsh-google-native.git"
+  },
   "engines": {
     "node": ">=22",
     "dsh": "*"
@@ -31,7 +35,8 @@
     "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "node --test --test-isolation=none test/*.test.mjs",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "release": "node scripts/release.mjs"
   },
   "dependencies": {
     "@google/genai": "2.32.0",

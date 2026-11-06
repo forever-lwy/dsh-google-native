@@ -35,7 +35,7 @@ const parameter = (schema: z.ZodType, symbol: string) => ({
 
 /** Shared strict descriptors; the browser imports no Host implementation or credentials. */
 export const chatRemoteInfo = createTypertRemoteInfo({
-  package: 'dsh-google-native',
+  package: '@forever-lwy/dsh-google-native',
   methods: {
     'nativeGoogleChat/get': {
       service: 'nativeGoogleChat', invocation: { kind: 'direct' },

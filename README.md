@@ -26,7 +26,23 @@
 
 dsh 单条回复使用一个候选结果，因此普通对话要求 `candidateCount: 1`，函数参数必须以完整 JSON 接收。多候选、增量函数参数以及其他无法用通用 dsh chunk 表示的行为，使用下面的原生 SDK 服务入口。
 
-## 安装与发布
+## 安装
+
+在 DSH「插件 → 添加插件」输入下面的来源，确认安装并启用：
+
+```text
+github:forever-lwy/dsh-google-native
+```
+
+仓库默认分支是 `release`，其中每个提交都是某次发版的源码加上构建好的 `lib/`，并去掉了 `prepare`，所以安装时不装 devDependencies、不构建。dshmarket 按默认分支上 `package.json` 的版本号判断是否有更新，点击更新时安装 `release` 的最新提交。不要安装 `master`：它只有源码，安装时会靠 `prepare` 拉全部 devDependencies 现场构建。
+
+包名自 0.1.13 起为 `@forever-lwy/dsh-google-native`，以免与 npm 和插件市场目录里的同名插件混淆。从旧的 `dsh-google-native` 版本包迁移时，先卸载旧的 `dsh-google-native`，再安装上面的来源；两者注册同一宿主行，不能同时安装。宿主行 id 和设置命名空间不变。
+
+设置保存在 profile `cordis.patch.yml` 的 `dsh-google-native` 行。迁移时若该行写有 `name: dsh-google-native`，在卸载旧包后、安装新包前改成 `name: '@forever-lwy/dsh-google-native'`，设置即保留；不改则 dsh 以 name mismatch 跳过整行。API Key 在凭据存储中，不受影响。如果默认模型由本插件提供，卸载到重装之间新建会话会失败，迁移时尽快完成。
+
+是否需要重启以安装界面提示为准。不要用 `link:`、目录依赖或模块路径把源码目录接入常用 profile。
+
+## 开发
 
 本项目是独立源码目录。构建、修改源码和 Git 提交不会切换运行实例中的插件。
 
@@ -35,18 +51,11 @@ npm ci
 npm run check
 npm run build
 npm test
-npm pack --pack-destination ../releases
 ```
 
-在 dsh 的“插件 → 添加插件”中输入下面的**容器路径**，由用户确认安装和启用：
+需要离线备用的本地版本包时运行 `npm pack --pack-destination ../releases`，每版使用新的版本号和文件名。
 
-```text
-/plugins/releases/dsh-google-native-0.1.12.tgz
-```
-
-不要使用 `link:` 将源码连接到日常 `web` profile。下一次测试应提升版本并生成新文件名。现有 HMR 可以应用用户主动安装的版本；只有界面明确提示 `restart-required` 才需要安排重启。dsh `0.2.1-rc.5` 普通“已安装”页面没有第三方插件通用更新按钮，不能将较新上游界面的行为视为已具备。
-
-Git 来源发布需要固定完整 commit SHA，市场记录也应引用该 SHA。本项目提供 `prepare` 构建；安装时如果 pnpm 请求构建许可，应按具体插件提示确认。仓库不包含市场部署，也不会自动创建 GitHub 仓库、推送、发布索引或安装到运行实例。
+发版：在 `master` 上开发和推送不会触发任何构建。改完后递增 `package.json` 版本并提交，打同名标签并推送，例如 `git tag v0.1.13 && git push origin master v0.1.13`。GitHub Actions（`.github/workflows/release.yml`）只在 `v*` 标签推送时运行：检查标签与版本一致，按 lockfile `npm ci`，由 `scripts/release.mjs` 构建、测试，在 `release` 分支上追加一个发布提交（源码加 `lib/`，去掉 `prepare`；父提交是上一个发布提交和该标签的源码提交）并推送。`release` 已有同一或更高版本时会拒绝发版。`npm run release` 可在本地对已打标签的提交生成同样的发布提交（不推送）。
 
 ## 配置
 
