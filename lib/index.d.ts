@@ -1,0 +1,12 @@
+import type { Context } from '@deepseek-ai/cordis';
+import { Config } from './config.js';
+export { Config, DEFAULT_MODELS, defaultProfile, profilesOf, validateProfile } from './config.js';
+export type { GoogleFileOptions, GoogleModelConfig, GoogleNativeTools, GoogleProfile, GoogleProfileOptions, GoogleProvider, GoogleReasoningConfig, Profiles } from './config.js';
+export { GoogleNativeAdapter } from './adapter.js';
+export { GoogleNativeService } from './service.js';
+export type { GoogleModelCapabilities } from './capabilities.js';
+export { GOOGLE_NATIVE_FILE_TOOL } from './native-file-tool.js';
+export type { NativeFileToolReceipt } from './native-file-tool.js';
+export declare const name = "dsh-google-native";
+export declare const inject: string[];
+export declare function apply(ctx: Context, config: Config): void;
