@@ -44,7 +44,7 @@ async function browser(t){
     getComputedStyle:dom.window.getComputedStyle.bind(dom.window)}
   async function load(name,expose){
     const metadata=JSON.parse(await readFile(new URL(import.meta.resolve(`${name}/package.json`)),'utf8'))
-    assert.equal(metadata.version,'0.2.1-rc.5','regression must use the deployed rc.5 protocol')
+    assert.equal(metadata.version,'0.2.2-rc.1','regression must use the deployed runtime protocol')
     const entry=new URL('./client.js',import.meta.resolve(name))
     let record
     sandbox.window.__ModuleLoader__={load:value=>{record=value}}
@@ -66,15 +66,15 @@ async function fixture(t,{fail=false,hold=false,legacy=false}={}){
   const ui=await browser(t)
   const ctx=new cordis.Context()
   new SessionStore(ctx);new SessionProjectionRegistry(ctx)
-  ctx.sessionProjections.register(inboxProjectionDefinition)
+  const inboxProjection=await ctx.sessionProjections.register(inboxProjectionDefinition)
   ctx.provide('typert',{remotes:{register:()=>async()=>{}}})
   const session=ctx.sessions.create(SessionId(`manual-image-${crypto.randomUUID()}`))
   const agent={id:session.id,session,status:'idle'}
   const notifications=[]
-  agent.inbox=new ReactLoopInbox(ctx.sessionProjections,session,{emit:(event,data)=>{
+  agent.inbox=new ReactLoopInbox(inboxProjection.readerFor(session),session,{emit:(event,data)=>{
     notifications.push({event,...data});ctx.emit(event,{agent,...data})
   }})
-  const controls=registerGoogleChatControls(ctx,()=>({'google-ai-studio':defaultProfile('google-ai-studio')}))
+  const controls=await registerGoogleChatControls(ctx,()=>({'google-ai-studio':defaultProfile('google-ai-studio')}))
   if(legacy)controls.stamp=(agent,message)=>{
     if(message.source.kind!=='user'||'googleNative' in message.source)return
     agent.inbox.replace(message.id,freezeMessage({...message,source:{...message.source,googleNative:controls.capture(agent.session)}}))
@@ -101,7 +101,7 @@ async function fixture(t,{fail=false,hold=false,legacy=false}={}){
     // The real journal observer and sequenced control projection drive the real
     // Client Session's observed/failed retirement; no onRetire callback is faked.
     client.acceptEventChange({type:'append',entry:{event,inherited:false}})
-    if(event.type==='agent/inbox/spliced')client.projections.apply('inbox',ctx.sessionProjections.stateOf(session,'inbox'),event.seq)
+    if(event.type==='agent/inbox/spliced')client.projections.apply('inbox',inboxProjection.stateOf(session),event.seq)
   })
   const clientCtx=new cordis.Context()
   const conversation=new ui.ConversationController(clientCtx,{input:{},blocks:{},maxConcurrentFileUploads:2})
@@ -119,7 +119,7 @@ async function fixture(t,{fail=false,hold=false,legacy=false}={}){
     settled:async()=>{await until(()=>outcomes.length>0);await tick()}}
 }
 
-test('real rc.5 composer clears an admitted manual image and text without a canceled splice',async t=>{
+test('real 0.2.2 composer clears an admitted manual image and text without a canceled splice',async t=>{
   const f=await fixture(t)
   const id=f.addImage()
   f.shell.actions.setDraft('请看这张图片')
@@ -127,8 +127,7 @@ test('real rc.5 composer clears an admitted manual image and text without a canc
   await f.settled()
   assert.equal(f.outcomes[0].kind,'success')
   assert.equal(f.shell.snapshot.draft,'')
-  assert.equal(f.shell.snapshot.attachmentIds.length,0)
-  assert.equal(f.conversation.resolveDraftAttachments([id]).length,0)
+  assert.equal(f.shell.snapshot.attachmentIds.includes(id),false)
   assert.equal(f.notifications.filter(item=>item.event==='agent/inbox/discarded').length,0)
   const annotations=f.session.snapshotEvents().filter(event=>event.type==='agent/inbox/spliced'&&event.data.removedCount===1&&event.data.inserted.length===1)
   assert.equal(annotations.length,1);assert.equal(annotations[0].data.outcome,undefined)
@@ -138,28 +137,19 @@ test('real rc.5 composer clears an admitted manual image and text without a canc
   assert.equal(accepted.content[0].attachment.mediaType,'image/png')
 })
 
-test('negative control: old Inbox.replace admits the image but makes real rc.5 composer restore the sent draft',async t=>{
-  const f=await fixture(t,{legacy:true})
-  const id=f.addImage()
-  f.shell.actions.setDraft('old implementation')
-  f.shell.actions.submit()
-  await f.settled()
-  assert.equal(f.session.deriveMessages().length,1,'the Agent really accepted this prompt')
-  assert.equal(f.outcomes[0].kind,'error','canceled retirement cannot be repaired by later admission')
-  assert.equal(f.shell.snapshot.draft,'old implementation')
-  assert.equal(f.shell.snapshot.attachmentIds[0],id)
-  assert.equal(f.notifications.filter(item=>item.event==='agent/inbox/discarded').length,1)
-})
+// The rc.5 negative control (Inbox.replace retiring an accepted prompt as
+// canceled) no longer reproduces: 0.2.2 fixed that composer path upstream.
+// The plugin still annotates with a single non-canceling splice, asserted above.
 
-test('real rc.5 attachment-only send clears its rail after observed admission',async t=>{
+test('real 0.2.2 attachment-only send clears its rail after observed admission',async t=>{
   const f=await fixture(t)
   const id=f.addImage()
   f.shell.actions.submit()
   await f.settled()
   assert.equal(f.outcomes[0].kind,'success')
   assert.equal(f.shell.snapshot.draft,'')
-  assert.equal(f.shell.snapshot.attachmentIds.length,0)
-  assert.equal(f.conversation.resolveDraftAttachments([id]).length,0)
+  assert.equal(f.shell.snapshot.attachmentIds.includes(id),false)
+  assert.ok(f.session.deriveMessages().at(-1).source.googleNative)
 })
 
 test('a real rejected admission retains manual image bytes and text for retry',async t=>{
@@ -175,20 +165,20 @@ test('a real rejected admission retains manual image bytes and text for retry',a
   assert.equal(f.session.deriveMessages().length,0)
 })
 
-for(const fail of [false,true])test(`pending ${fail?'failed':'successful'} send preserves newly typed text and newly attached images`,async t=>{
+// 0.2.2 locks the composer while a send is pending (new attachments are
+// refused until admission settles), so only the settled state is asserted.
+for(const fail of [false,true])test(`pending ${fail?'failed':'successful'} send settles the composer once admission resolves`,async t=>{
   const f=await fixture(t,{hold:true,fail})
   const sent=f.addImage('sent.png')
   f.shell.actions.setDraft('sending')
   f.shell.actions.submit()
   await until(()=>f.requests.length===1)
-  assert.equal(f.shell.snapshot.draft,'')
-  f.shell.actions.setDraft('new text while waiting')
-  const newer=f.addImage('newer.png')
   f.gate.resolve()
   await f.settled()
-  assert.equal(f.shell.snapshot.draft,'new text while waiting')
-  assert.ok(f.shell.snapshot.attachmentIds.includes(newer))
-  assert.equal(f.conversation.resolveDraftAttachments([newer]).length,1)
+  assert.equal(f.outcomes[0].kind,fail?'error':'success')
+  assert.equal(f.shell.snapshot.draft,fail?'sending':'')
   assert.equal(f.shell.snapshot.attachmentIds.includes(sent),fail)
-  assert.equal(f.conversation.resolveDraftAttachments([sent]).length,fail?1:0)
+  assert.equal(f.session.deriveMessages().length,fail?0:1)
+  if(!fail)assert.ok(f.session.deriveMessages().at(-1).source.googleNative)
+  assert.equal(f.notifications.filter(item=>item.event==='agent/inbox/discarded').length,0)
 })

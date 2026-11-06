@@ -17,11 +17,11 @@ const model = 'gemini-3.8-flash'
 const choices = { nativeFiles: false, search: true, urlContext: false, codeExecution: false, maps: false }
 const signal = () => new AbortController().signal
 
-function fixture(seed = [], actualRegistry = false) {
+async function fixture(seed = [], actualRegistry = false) {
   const ctx = new Context()
   new SessionStore(ctx)
   new SessionProjectionRegistry(ctx)
-  ctx.sessionProjections.register(inboxProjectionDefinition)
+  const inboxProjection = await ctx.sessionProjections.register(inboxProjectionDefinition)
   const session = ctx.sessions.create(SessionId(`chat-test-${Math.random()}`), { seed })
   const profiles = { [provider]: defaultProfile(provider), 'google-vertex-native': defaultProfile('google-vertex-native') }
   let flushes = 0
@@ -31,19 +31,20 @@ function fixture(seed = [], actualRegistry = false) {
   else ctx.provide('typert', { remotes: { register(info) { descriptors.push(...info.descriptors); return async () => {} } } })
   const agent = { id: session.id, session, status: 'idle' }
   const notifications=[]
-  agent.inbox=new ReactLoopInbox(ctx.sessionProjections,session,{emit:(event,payload)=>notifications.push({event,...payload})})
+  agent.inbox=new ReactLoopInbox(inboxProjection.readerFor(session),session,{emit:(event,payload)=>notifications.push({event,...payload})})
   ctx.provide('sessionController', {
     async resolveAgent(id) { return id === session.id ? { agent } : { error: new Error('wrong session') } },
-    async inspect() { throw new Error('wrong session') },
   })
-  const controls = registerGoogleChatControls(ctx, () => profiles)
+  // 0.2.2 cold reads go through a read-only persistence handle.
+  ctx.provide('sessionPersistence', { async open() { throw new Error('wrong session') } })
+  const controls = await registerGoogleChatControls(ctx, () => profiles)
   const request = { sessionId: session.id, provider, model }
   const enqueue=(message,target='next-turn')=>agent.inbox.append(target,message)
   return { ctx, session, profiles, agent, controls, request, descriptors, enqueue, notifications, flushes: () => flushes }
 }
 
 test('per-session options save complete durable preferences and await the normal flush checkpoint', async () => {
-  const one = fixture()
+  const one = await fixture()
   const before = await one.controls.get(one.request, signal())
   assert.equal(before.choices.nativeFiles, true)
   assert.equal(before.choices.search, false)
@@ -54,12 +55,12 @@ test('per-session options save complete durable preferences and await the normal
   assert.equal(one.flushes(), 1)
   assert.deepEqual((await one.controls.get(one.request, signal())).choices, choices)
   assert.equal(one.session.snapshotEvents().at(-1).type, 'plugin:dsh-google-native/chat-controls')
-  const two = fixture()
+  const two = await fixture()
   assert.equal((await two.controls.get(two.request, signal())).choices.search, false)
 })
 
 test('enqueue captures immutable exact choices while retaining RPC identity, caller and timezone', async () => {
-  const instance = fixture()
+  const instance = await fixture()
   await instance.controls.set({ ...instance.request, choices, expectedRevision: 0 }, signal())
   const prompt = createUserMessage({ source: { kind: 'user', rpcId: 'rpc-original', principal: { kind: 'agent', id: 'caller' }, clientTimeZone: 'Asia/Shanghai' }, content: [{ type: 'text', text: 'Read attachment' }] })
   instance.enqueue(prompt)
@@ -83,9 +84,9 @@ test('enqueue captures immutable exact choices while retaining RPC identity, cal
   assert.ok(!('googleNative' in prompt.source), 'original frozen input remains unchanged')
 })
 
-test('stamping preserves the current pending source, queue order and attachment references in either lane', () => {
+test('stamping preserves the current pending source, queue order and attachment references in either lane', async () => {
   for(const target of ['next-turn','next-step']){
-    const instance=fixture()
+    const instance=await fixture()
     const before=createUserMessage({source:{kind:'user'},content:[{type:'text',text:'before'}]})
     const original=createUserMessage({source:{kind:'user',rpcId:'stable-rpc'},content:[{type:'image',attachment:{attachmentId:'sha256:fixture',mediaType:'image/png',bytes:1,name:'test.png'}}]})
     const current=freezeMessage({...original,source:{...original.source,otherPlugin:'retained'}})
@@ -101,8 +102,8 @@ test('stamping preserves the current pending source, queue order and attachment 
   }
 })
 
-test('late stamping cannot resurrect claimed or canceled messages', () => {
-  const instance=fixture()
+test('late stamping cannot resurrect claimed or canceled messages', async () => {
+  const instance=await fixture()
   const prompt=createUserMessage({source:{kind:'user',rpcId:'gone'},content:[{type:'text',text:'gone'}]})
   instance.enqueue(prompt)
   instance.agent.inbox.remove(prompt.id)
@@ -113,7 +114,7 @@ test('late stamping cannot resurrect claimed or canceled messages', () => {
 })
 
 test('serialized preferences and accepted prompt source survive restore and an actual fork seed', async () => {
-  const instance = fixture()
+  const instance = await fixture()
   await instance.controls.set({ ...instance.request, choices, expectedRevision: 0 }, signal())
   const prompt=createUserMessage({ source: { kind: 'user', rpcId: 'rpc' }, content: [{ type: 'text', text: 'Hi' }] })
   instance.enqueue(prompt);instance.controls.stamp(instance.agent,prompt)
@@ -121,7 +122,7 @@ test('serialized preferences and accepted prompt source survive restore and an a
   instance.session.append('agent/inbox/spliced',{target:'next-turn',start:0,removedCount:1,inserted:[]})
   instance.session.append('user/message', stamped, { surfaceOp: 'append' })
   const seed = JSON.parse(JSON.stringify(instance.session.snapshotEvents()))
-  const restored = fixture(seed)
+  const restored = await fixture(seed)
   assert.deepEqual((await restored.controls.get(restored.request, signal())).choices, choices)
   const durableSource = restored.session.deriveMessages().at(-1).source
   assert.deepEqual(readChatChoices(durableSource, provider, model), choices)
@@ -131,7 +132,7 @@ test('serialized preferences and accepted prompt source survive restore and an a
 })
 
 test('busy saves, stale revisions, unsupported flags and unconfigured models are refused without append', async () => {
-  const instance = fixture()
+  const instance = await fixture()
   const start = instance.session.seq
   instance.agent.status = 'running'
   await assert.rejects(instance.controls.set({ ...instance.request, choices, expectedRevision: 0 }, signal()), error => error.code === 'session/agent-busy')
@@ -144,8 +145,8 @@ test('busy saves, stale revisions, unsupported flags and unconfigured models are
   assert.equal(instance.session.seq, start)
 })
 
-test('strict Remote descriptors and method resources address only the requested session', () => {
-  const instance = fixture()
+test('strict Remote descriptors and method resources address only the requested session', async () => {
+  const instance = await fixture()
   for (const method of ['get', 'set']) {
     const descriptor = instance.descriptors.find(item => item.method === method)
     assert.equal(descriptor.namespace, 'nativeGoogleChat')
@@ -159,8 +160,8 @@ test('strict Remote descriptors and method resources address only the requested 
   assert.throws(() => schema.parse({ request: { ...instance.request, choices: { ...choices, search: 'true' }, expectedRevision: 0 } }))
 })
 
-test('invalid capability descriptions fail closed in the durable source snapshot', () => {
-  const instance = fixture()
+test('invalid capability descriptions fail closed in the durable source snapshot', async () => {
+  const instance = await fixture()
   instance.profiles[provider].models.find(entry => entry.id === model).generationConfig = { tools: {} }
   const prompt=createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Hi' }] })
   instance.enqueue(prompt);instance.controls.stamp(instance.agent,prompt)
@@ -169,7 +170,7 @@ test('invalid capability descriptions fail closed in the durable source snapshot
 })
 
 test('actual rc.5 Gateway checks the exact requested session before dispatching controls', async () => {
-  const instance = fixture([], true)
+  const instance = await fixture([], true)
   const decisions = []
   instance.ctx.provide('remoteAccess', { decide(input) {
     decisions.push(input)
@@ -186,17 +187,20 @@ test('actual rc.5 Gateway checks the exact requested session before dispatching 
 })
 
 test('reading attached or cold options never activates an Agent or drains pending work', async () => {
-  const instance = fixture()
+  const instance = await fixture()
   await instance.controls.set({ ...instance.request, choices, expectedRevision: 0 }, signal())
   const stored = JSON.parse(JSON.stringify(instance.session.snapshotEvents()))
   let activations = 0
   let inspections = 0
+  let closed = 0
   instance.ctx.sessionController.resolveAgent = async () => { activations++; throw new Error('read must not activate an Agent') }
-  instance.ctx.sessionController.inspect = async (id, suppliedSignal) => {
+  instance.ctx.sessionPersistence.open = async (id, access, options) => {
     inspections++
     assert.equal(id, 'cold-with-pending-work')
-    assert.ok(suppliedSignal)
-    return { meta: { ...instance.session.header, id }, inheritedEventCount: 0, events: stored }
+    assert.equal(access, 'read', 'cold reads never take write ownership')
+    assert.ok(options.signal)
+    return { header: { ...instance.session.header, id }, inheritedEventCount: 0,
+      read: async () => ({ events: stored, eventState: 'shared-frozen' }), close: async () => { closed++ } }
   }
   assert.deepEqual((await instance.controls.get(instance.request, signal())).choices, choices)
   assert.equal(inspections, 0, 'attached reads use the current projection')
@@ -204,6 +208,7 @@ test('reading attached or cold options never activates an Agent or drains pendin
   assert.deepEqual(cold.choices, choices)
   assert.equal(cold.revision, 1)
   assert.equal(inspections, 1)
+  assert.equal(closed, 1, 'the read handle is always closed')
   assert.equal(activations, 0)
   assert.equal(instance.ctx.sessions.get(SessionId('cold-with-pending-work')), undefined)
 })

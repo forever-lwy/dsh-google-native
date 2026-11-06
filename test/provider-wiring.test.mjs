@@ -16,6 +16,7 @@ test('actual main plugin mounts chat and provider settings together and disposes
   new TypertRegistry(ctx)
   ctx.provide('attachments', { fileHostPath: () => undefined })
   ctx.provide('sessionController', {})
+  ctx.provide('sessionPersistence', {})
   ctx.provide('settings', { writable: true, describe: () => [{ ns: 'dsh-google-native', revision: 1 }] })
   ctx.provide('credentials', {
     async describe() { return { configured: true, writable: true, source: 'managed' } },

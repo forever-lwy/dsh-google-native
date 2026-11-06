@@ -4,7 +4,9 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import { freezeMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { appendPluginRecord, pluginRecordOf, type Session, SessionId } from '@deepseek-ai/dsh-session'
-import type {} from '@deepseek-ai/dsh-session-projection'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type {} from '@deepseek-ai/dsh-session-persistence'
+import type { ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { z } from 'zod'
 import type { GoogleProfile, Profiles } from './config.js'
@@ -24,9 +26,6 @@ declare module '@deepseek-ai/cordis' { interface Context { nativeGoogleChat: Goo
 declare module '@deepseek-ai/dsh-session' {
   interface PluginRecordMap { 'plugin:dsh-google-native/chat-controls': Preferences }
 }
-declare module '@deepseek-ai/dsh-session-projection/types' {
-  interface SessionProjectionStateMap { googleNativeChat: Preferences }
-}
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     'google-native-user': { kind: 'user'; googleNative: GoogleChatSourceSnapshot }
@@ -43,10 +42,14 @@ function foldPreferences(state: Preferences, event: Parameters<typeof pluginReco
 }
 
 export class GoogleChatControls extends TypertRemoteService {
-  constructor(ctx: Context, private readonly profiles: () => Profiles) { super(ctx, 'nativeGoogleChat') }
+  constructor(
+    ctx: Context,
+    private readonly profiles: () => Profiles,
+    private readonly preferences: ProjectionHandle<Preferences>,
+  ) { super(ctx, 'nativeGoogleChat') }
 
   private state(session: Session): Preferences {
-    const state = this.ctx.sessionProjections.stateOf(session, PROJECTION)
+    const state = this.preferences.stateOf(session)
     if (!state) throw new RemoteError('gateway/internal', 'Google 聊天选项投影不可用。', {})
     return state
   }
@@ -69,6 +72,13 @@ export class GoogleChatControls extends TypertRemoteService {
     return this.snapshotState(this.state(session), request)
   }
 
+  /** Read a persisted log through a read-only handle: no Agent, no ownership. */
+  private async persistedEvents(id: SessionId, signal: AbortSignal): Promise<readonly SessionEvent[]> {
+    const handle = await this.ctx.sessionPersistence.open(id, 'read', { signal })
+    try { return (await handle.read(0, undefined, { signal })).events }
+    finally { await handle.close() }
+  }
+
   private async agent(sessionId: string, signal: AbortSignal): Promise<Agent> {
     signal.throwIfAborted()
     const result = await this.ctx.sessionController.resolveAgent(SessionId(sessionId))
@@ -85,13 +95,13 @@ export class GoogleChatControls extends TypertRemoteService {
     const live = this.ctx.sessions.get(id)
     if (live) return this.snapshot(live, request)
     // Merely opening the native-options UI must never resume an Agent or
-    // release pending inbox work. The controller's inspection path is cold-safe.
-    const inspected = await this.ctx.sessionController.inspect(id, signal)
+    // release pending inbox work. A persistence read handle is cold-safe.
+    const persisted = await this.persistedEvents(id, signal)
     signal.throwIfAborted()
     const raced = this.ctx.sessions.get(id)
     if (raced) return this.snapshot(raced, request)
     let state: Preferences = { revision: 0, selections: [] }
-    for (const event of inspected.events) {
+    for (const event of persisted) {
       signal.throwIfAborted()
       state = foldPreferences(state, event)
     }
@@ -162,12 +172,12 @@ export class GoogleChatControls extends TypertRemoteService {
 }
 
 /** Mount only when the normal chat/session assembly is present. */
-export function registerGoogleChatControls(ctx: Context, profiles: () => Profiles): GoogleChatControls {
-  ctx.sessionProjections.register({
+export async function registerGoogleChatControls(ctx: Context, profiles: () => Profiles): Promise<GoogleChatControls> {
+  const preferences = await ctx.sessionProjections.register({
     key: PROJECTION, stateVersion: 1, stateSchema: preferenceSchema,
     init: () => ({ revision: 0, selections: [] }), apply: foldPreferences,
   })
-  const service = new GoogleChatControls(ctx, profiles)
+  const service = new GoogleChatControls(ctx, profiles, preferences)
   ctx.typert.remotes.register(chatRemoteInfo)
   ctx.on('agent/inbox/inserted', ({ agent, message }) => service.stamp(agent, message))
   return service

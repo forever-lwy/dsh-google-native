@@ -5,14 +5,16 @@ import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { defaultProfile } from '../lib/config.js'
 import { GOOGLE_NATIVE_FILE_TOOL, registerNativeFileTool } from '../lib/native-file-tool.js'
 
-function fixture(t, { provider = 'google-ai-studio', model = 'gemini-2.5-flash', cwd = '/workspace', data = Buffer.from('%PDF-1.7\noriginal\u0000bytes'), path = '/workspace/example.pdf', headerRoot = '/workspace' } = {}) {
+async function fixture(t, { provider = 'google-ai-studio', model = 'gemini-2.5-flash', cwd = '/workspace', data = Buffer.from('%PDF-1.7\noriginal\u0000bytes'), path = '/workspace/example.pdf', headerRoot = '/workspace' } = {}) {
   const ctx = new Context()
   t.after(() => ctx.fiber.dispose())
   new SystemPrompt(ctx, {})
   new ToolRuntime(ctx)
+  await ctx.plugin(NativeToolExecutor)
   const profiles = { 'google-ai-studio': defaultProfile('google-ai-studio'), 'google-vertex-native': defaultProfile('google-vertex-native') }
   const entries = new Map([[path, { bytes: data, version: 'v1', type: 'file' }]])
   const reads = [], saved = [], injected = []
@@ -38,8 +40,17 @@ function fixture(t, { provider = 'google-ai-studio', model = 'gemini-2.5-flash',
   })
   const agent = { options: { provider, model }, session: { id: 'session-under-test', header: { cwd: headerRoot }, requestHeader: () => ({ config: agent.options }) }, inject: message => injected.push(message) }
   registerNativeFileTool(ctx, () => profiles)
-  const call = (args = { path }, options = {}) => ctx.tools.execute({ callId: 'native-call', name: GOOGLE_NATIVE_FILE_TOOL, arguments: args, agent, signal: new AbortController().signal, ...options })
-  return { ctx, profiles, entries, reads, saved, injected, agent, call, data, setReadHook: value => { readHook = value } }
+  // 0.2.2: a model step resolves its admitted tool set from the selected route,
+  // then the deployment executor runs the call batch against that set.
+  const resolveTools = (signal = new AbortController().signal) => ctx.tools.resolve({ agent, modelSelection: { ...agent.options }, signal })
+  const call = async (args = { path }, { signal = new AbortController().signal } = {}) => {
+    const toolSet = await resolveTools()
+    try {
+      const batch = await ctx.tools.execute({ calls: [{ type: 'tool-call', id: 'native-call', name: GOOGLE_NATIVE_FILE_TOOL, arguments: JSON.stringify(args) }], agent, signal, toolSet })
+      return batch.results[0].result
+    } finally { toolSet.dispose() }
+  }
+  return { ctx, profiles, entries, reads, saved, injected, agent, call, resolveTools, data, setReadHook: value => { readHook = value } }
 }
 
 test('native attachment tool stores exact original bytes and renders only a durable FileBlock for both providers, including images', async t => {
@@ -47,7 +58,7 @@ test('native attachment tool stores exact original bytes and renders only a dura
     ['/workspace/example.pdf', Buffer.from('%PDF-1.7\nraw\u0000payload')],
     ['/workspace/screenshot.png', Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 255, 20])],
   ]) {
-    const f = fixture(t, { provider, path, data: bytes })
+    const f = await fixture(t, { provider, path, data: bytes })
     const result = await f.call()
     assert.equal(result.isError, false)
     assert.deepEqual(f.saved[0].bytes, bytes)
@@ -61,7 +72,7 @@ test('native attachment tool stores exact original bytes and renders only a dura
 })
 
 test('workspace containment follows canonical targets, original workspace roots and current relative paths', async t => {
-  const f = fixture(t, { cwd: '/workspace/subdir', path: '/workspace/report.pdf' })
+  const f = await fixture(t, { cwd: '/workspace/subdir', path: '/workspace/report.pdf' })
   assert.equal((await f.call({ path: '../report.pdf' })).isError, false)
   f.entries.set('/outside/private.pdf', { bytes: Buffer.from('%PDF-private'), version: 'v1', type: 'file' })
   f.entries.set('/workspace/link.pdf', { alias: '/outside/private.pdf', bytes: Buffer.alloc(0), version: 'v1', type: 'file' })
@@ -73,7 +84,7 @@ test('workspace containment follows canonical targets, original workspace roots 
 })
 
 test('unsupported models, unsupported declared media and nonregular or oversized files fail before attachment storage', async t => {
-  const f = fixture(t)
+  const f = await fixture(t)
   f.agent.options = { provider: 'other-provider', model: 'other' }
   assert.equal((await f.call()).isError, true)
   assert.equal(f.reads.length, 0)
@@ -96,60 +107,37 @@ test('unsupported models, unsupported declared media and nonregular or oversized
 test('capture uses bounded chunks and refuses file mutation or cancellation before publishing a durable reference', async t => {
   const large = Buffer.alloc(2 * 1024 * 1024 + 7, 65)
   Buffer.from('%PDF-').copy(large)
-  const f = fixture(t, { data: large })
+  const f = await fixture(t, { data: large })
   assert.equal((await f.call()).isError, false)
   assert.deepEqual(f.saved[0].bytes, large)
   assert.ok(f.reads.every(read => read.length <= 1024 * 1024))
-  const changed = fixture(t, { data: large })
+  const changed = await fixture(t, { data: large })
   changed.setReadHook((_target, range) => { if (range.offset > 0) changed.entries.get('/workspace/example.pdf').version = 'changed' })
   assert.equal((await changed.call()).isError, true)
   assert.equal(changed.saved.length, 0)
-  const cancelled = fixture(t)
+  const cancelled = await fixture(t)
   const controller = new AbortController()
   cancelled.setReadHook(() => controller.abort())
   assert.equal((await cancelled.call(undefined, { signal: controller.signal })).isError, true)
   assert.equal(cancelled.saved.length, 0)
 })
 
-test('PTC-style nested files reach the same agent only after both final outcomes succeed; denial, redaction and late cancellation suppress delivery', async t => {
-  for (const mode of ['success', 'inner-block', 'inner-remove-file', 'outer-block', 'late-cancel']) {
-    const f = fixture(t)
-    const controller = new AbortController()
-    f.ctx.tools.register(defineTool({ name: 'test_transport', description: 'Test transport', parameters: {},
-      output: { schema: { type: 'boolean' }, render: () => [{ type: 'text', text: 'Transport finished' }] },
-      async execute(_args, exec) {
-        await f.ctx.tools.execute({ name: GOOGLE_NATIVE_FILE_TOOL, callId: 'nested-file-call', rootCallId: exec.rootCallId,
-          arguments: { path: '/workspace/example.pdf' }, agent: exec.agent, parent: exec.token, signal: exec.signal })
-        assert.equal(f.injected.length, 0, 'nested success does not publish before the transport finalizes')
-        if (mode === 'late-cancel') controller.abort()
-        return true
-      },
-    }))
-    f.ctx.on('tools/post-execute', async (exec, _result, next) => {
-      if (exec.name === GOOGLE_NATIVE_FILE_TOOL && mode === 'inner-block' || exec.name === 'test_transport' && mode === 'outer-block') return { kind: 'block', feedback: [{ type: 'text', text: 'Blocked by policy' }] }
-      if (exec.name === GOOGLE_NATIVE_FILE_TOOL && mode === 'inner-remove-file') return { kind: 'accept', content: [{ type: 'text', text: 'File removed by policy' }] }
-      return next()
-    })
-    const result = await f.ctx.tools.execute({ name: 'test_transport', callId: 'outer-call', arguments: {}, agent: f.agent, signal: controller.signal })
-    if (mode !== 'success') assert.equal(f.injected.length, 0, mode)
-    else {
-      assert.equal(result.isError, false)
-      assert.equal(f.injected.length, 1)
-      assert.equal(f.injected[0].source.kind, 'google-native-file')
-      assert.equal(f.injected[0].source.googleNativeFile.callId, 'nested-file-call')
-      assert.equal(f.injected[0].source.googleNativeFile.rootCallId, 'outer-call')
-      assert.deepEqual(f.injected[0].content, [{ type: 'file', attachment: f.saved[0].ref }])
-    }
-  }
-})
+// PTC nesting is exercised through the real 0.2.2 PTC executor in
+// native-file-tool-integration.test.mjs (success, inner/outer block, file
+// removal and late cancellation); manual `parent` dispatch is no longer public.
 
-test('native model assembly shows the upload schema only for an eligible selected route and preserves unrelated tools', async t => {
-  const f = fixture(t)
+test('step admission shows the upload tool only for an eligible selected route and preserves unrelated tools', async t => {
+  const f = await fixture(t)
   f.ctx.tools.register(defineTool({ name: 'unrelated', description: 'Unrelated', parameters: {}, output: { schema: { type: 'boolean' }, render: () => [] }, async execute() { return true } }))
-  let assembly = await f.ctx.systemPrompt.assemble({ agent: f.agent, scope: f.agent })
-  assert.ok(assembly.tools.some(tool => tool.name === GOOGLE_NATIVE_FILE_TOOL))
-  f.ctx.on('system-prompt/assemble', async (_assembly, _context, next) => ({ ...await next(), variables: { provider: 'other-provider', model: 'other' } }))
-  assembly = await f.ctx.systemPrompt.assemble({ agent: f.agent, scope: f.agent })
-  assert.ok(!assembly.tools.some(tool => tool.name === GOOGLE_NATIVE_FILE_TOOL))
-  assert.ok(assembly.tools.some(tool => tool.name === 'unrelated'))
+  const visible = async () => {
+    const toolSet = await f.resolveTools()
+    try { return f.ctx.tools.schemas(f.agent, toolSet).map(tool => tool.name) } finally { toolSet.dispose() }
+  }
+  let names = await visible()
+  assert.ok(names.includes(GOOGLE_NATIVE_FILE_TOOL))
+  f.agent.options = { provider: 'other-provider', model: 'other' }
+  names = await visible()
+  assert.ok(!names.includes(GOOGLE_NATIVE_FILE_TOOL))
+  assert.ok(names.includes('unrelated'))
+  assert.equal((await f.call()).isError, true, 'a hidden tool cannot be dispatched by name')
 })

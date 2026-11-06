@@ -32,8 +32,8 @@ test('real profile settings read, persist and apply provider changes without rem
   assert.deepEqual(saved.profiles[0].models.map(model => model.id), ['custom-original', 'gemini-3.8-flash'])
   assert.equal(saved.profiles[0].credential.configured, true)
   assert.equal(entry.fiber, fiber, 'volatile edits apply through the existing rc.5 fiber')
-  assert.equal(entry.fiber.config.aiStudio.get().generationConfig.temperature, 0.2)
-  assert.equal(entry.fiber.config.aiStudio.get().models[0].generationConfig.topP, 0.4)
+  assert.equal(entry.fiber.resolveConfig(entry.fiber.config).aiStudio.get().generationConfig.temperature, 0.2)
+  assert.equal(entry.fiber.resolveConfig(entry.fiber.config).aiStudio.get().models[0].generationConfig.topP, 0.4)
   assert.equal(values.get('GOOGLE_API_KEY'), 'fixture-managed-key')
   assert.equal(credentialWrites.length, 1)
   const stored = await readFile(join(dir, 'cordis.patch.yml'), 'utf8')
@@ -63,7 +63,7 @@ test('real profile persists SDK deadlines from provider cards and retains per-mo
     assert.equal(snapshot.profiles.find(profile => profile.provider === provider).connection.requestTimeoutMs, timeout)
   }
   assert.equal(entry.fiber, fiber)
-  const profiles = profilesOf(fiber.config)
+  const profiles = profilesOf(fiber.resolveConfig(fiber.config))
   assert.equal(profiles['google-ai-studio'].generationConfig.httpOptions.timeout, 600000)
   assert.equal(profiles['google-ai-studio'].generationConfig.temperature, 0.2)
   assert.equal(profiles['google-vertex-native'].generationConfig.httpOptions.timeout, 0)
@@ -110,7 +110,7 @@ test('real profile model advanced settings survive persistence and drive exact m
     const call = await ctx.llm.resolveCallConfig({ provider, model: chosen })
     assert.equal(call.maxTokens, 4096)
     assert.equal(call.reasoningEffort, 'custom-low')
-    const profile = profilesOf(fiber.config)[provider]
+    const profile = profilesOf(fiber.resolveConfig(fiber.config))[provider]
     const options = buildGenerationConfig(profile, profile.models[0], { ...call, messages: [] })
     assert.equal(options.maxOutputTokens, 4096)
     assert.deepEqual(options.responseModalities, ['TEXT'])
@@ -123,7 +123,7 @@ test('real profile model advanced settings survive persistence and drive exact m
   assert.match(persisted, /maxTokens: 4096/)
   assert.match(persisted, /inputTypes:/)
   assert.match(persisted, /responseModalities:/)
-  const profile = profilesOf(fiber.config)['google-ai-studio']
+  const profile = profilesOf(fiber.resolveConfig(fiber.config))['google-ai-studio']
   assert.equal(profile.models[0].generationConfig.topP, 0.8)
   assert.deepEqual(profile.models[0].generationConfig.httpOptions.headers, { 'x-private': 'never-expose-this-value' })
   assert.doesNotMatch(JSON.stringify(snapshot), /never-expose-this-value/)
@@ -142,10 +142,10 @@ test('real profiles persist upstream support declarations without changing nativ
     snapshot = await ctx.nativeGoogleSettings.save({ provider, connection: profile.connection, models: [metadata],
       expectedRevision: snapshot.revision,
     }, signal())
-    const model = profilesOf(entry.fiber.config)[provider].models[0]
+    const model = profilesOf(entry.fiber.resolveConfig(entry.fiber.config))[provider].models[0]
     assert.deepEqual(model.inputTypes, metadata.inputTypes)
     assert.deepEqual(model.outputTypes, metadata.outputTypes)
-    const options = buildGenerationConfig(profilesOf(entry.fiber.config)[provider], model,
+    const options = buildGenerationConfig(profilesOf(entry.fiber.resolveConfig(entry.fiber.config))[provider], model,
       { provider, model: model.id, messages: [] })
     assert.deepEqual(options.responseModalities, provider === 'google-ai-studio' ? ['AUDIO'] : undefined)
     assert.equal(options.maxOutputTokens, metadata.maxTokens)

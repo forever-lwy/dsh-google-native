@@ -178,13 +178,13 @@ test('real profile persists independent provider file limits and reloads them wi
       models: before.models, expectedRevision: snapshot.revision }, signal())
   }
   assert.equal(entry.fiber, fiber, 'file edits apply through the existing rc.5 settings fiber')
-  assert.deepEqual(fiber.config.aiStudio.get().files, {
+  assert.deepEqual(fiber.resolveConfig(fiber.config).aiStudio.get().files, {
     inlineThresholdBytes: 67108864, maxFileBytes: 268435456, pollIntervalMs: 777, processingTimeoutMs: 999999,
   })
-  assert.deepEqual(fiber.config.vertex.get().files, {
+  assert.deepEqual(fiber.resolveConfig(fiber.config).vertex.get().files, {
     inlineMaxBytes: 50331648, maxFileBytes: 201326592, pollIntervalMs: 555,
   })
-  assert.equal(fiber.config.aiStudio.get().generationConfig.temperature, 0.2)
+  assert.equal(fiber.resolveConfig(fiber.config).aiStudio.get().generationConfig.temperature, 0.2)
   const stored = parseYaml(await readFile(join(dir, 'cordis.patch.yml'), 'utf8'))
   const persisted = stored.flatMap(operation => operation.insert ?? []).find(item => item.id === 'dsh-google-native')
   assert.ok(persisted, 'the real settings writer retains the existing plugin entry')

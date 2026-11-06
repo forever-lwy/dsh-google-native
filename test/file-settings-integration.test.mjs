@@ -52,8 +52,11 @@ test('saving the inline threshold through real rc.5 settings lets the same recor
   assert.equal(entry.fiber, fiber, 'saving applies to the existing running test profile')
   assert.equal(saved.profiles.find(item => item.provider === provider).connection.files.inlineThresholdBytes, 67108864)
   assert.match(await readFile(join(dir, 'cordis.patch.yml'), 'utf8'), /inlineThresholdBytes: 67108864/)
-  assert.equal(fiber.config.aiStudio.get().files.pollIntervalMs, 7)
-  assert.equal(fiber.config.aiStudio.get().files.processingTimeoutMs, 9000)
+  // cordis 4.1 keeps the raw input on fiber.config; resolve it like the plugin receives it.
+  const effective = fiber.resolveConfig(fiber.config)
+  assert.equal(effective.aiStudio.get().files.pollIntervalMs, 7)
+  assert.equal(effective.aiStudio.get().files.processingTimeoutMs, 9000)
+  assert.equal(effective.aiStudio.get().files.inlineThresholdBytes, 67108864)
 
   const second = await Array.fromAsync(ctx.llm.stream(request()))
   assert.equal(second.at(-1).reason.kind, 'stop')

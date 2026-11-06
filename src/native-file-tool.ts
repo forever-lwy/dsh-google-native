@@ -3,9 +3,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-working-directory'
-import type {} from '@deepseek-ai/dsh-ptc-runtime'
 import { createUserMessage, LlmError, type ContentBlock } from '@deepseek-ai/dsh-llm'
-import { defineTool, renderToolsSdk, renderToolsSdkPy, type ToolExecutionToken } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ToolExecutionToken } from '@deepseek-ai/dsh-tools'
 import { resolveCapabilities } from './capabilities.js'
 import { assertNativeInputType, detectMimeType } from './files.js'
 import { GOOGLE_PROVIDERS, type GoogleInputType, type Profiles } from './config.js'
@@ -123,27 +122,12 @@ export function registerNativeFileTool(ctx: Context, profiles: () => Profiles): 
         model: selected.model.id, callId: String(exec.callId), rootCallId: String(exec.rootCallId), attachment }
     },
   })
-  ctx.tools.register(definition)
-
-  // Filtering the assembled route honors session model-selection waterfalls.
-  // Re-render the public SDK as well, so PTC does not advertise a hidden tool.
-  ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
-    const assembled = await next()
-    const agent = context.agent
-    const route = agent ? routeOf(agent) : undefined
-    const provider = assembled.variables.provider ?? route?.provider
-    const model = assembled.variables.model ?? route?.model
-    if (agent && eligible(provider, model)) return assembled
-    const sections = assembled.sections.map(section => {
-      if (section.name !== 'tools:sdk') return section
-      const runtime = ctx.get('ptcRuntime')
-      if (!runtime) return section
-      const schemas = ctx.tools.schemas(context.scope).filter(schema => ![GOOGLE_NATIVE_FILE_TOOL, 'run_code'].includes(schema.name))
-        .map(schema => ({ ...schema, output: ctx.tools.get(schema.name, context.scope)!.output.schema }))
-      return { ...section, text: runtime.language === 'python' ? renderToolsSdkPy(schemas) : renderToolsSdk(schemas, runtime.programFormat) }
-    })
-    return { ...assembled, sections, tools: assembled.tools.filter(tool => tool.name !== GOOGLE_NATIVE_FILE_TOOL) }
-  }, { prepend: true })
+  // 0.2.2 step admission: the step's captured model selection decides whether
+  // the tool participates. False removes it from the declarations, dispatch and
+  // the PTC SDK alike, so no prompt post-processing is needed.
+  ctx.tools.register(definition, {
+    when: ({ modelSelection }) => eligible(modelSelection.provider, modelSelection.model) !== undefined,
+  })
 
   // rc.5 preserves deferContext on late cancellation. Publish PTC files only
   // after BOTH the nested call and its enclosing transport have final success.

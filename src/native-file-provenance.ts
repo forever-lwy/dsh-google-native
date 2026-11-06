@@ -1,6 +1,8 @@
 import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+// 0.2.2 moved the `tool/ptc-dispatch` event declaration into the PTC executor package.
+import type {} from '@deepseek-ai/dsh-tool-executor-ptc'
 import type { NativeFileToolReceipt } from './native-file-tool.js'
 
 export const NATIVE_FILE_TOOL = 'google_native_attach_file'

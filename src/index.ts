@@ -58,8 +58,8 @@ export function apply(ctx: Context, config: Config): void {
         profile.provider === 'google-ai-studio' ? 'ai-studio' : 'vertex', signal),
     })
   })
-  ctx.inject(['sessionProjections', 'sessionController', 'sessions', 'typert'], chatCtx => {
-    registerGoogleChatControls(chatCtx, profiles)
+  ctx.inject(['sessionProjections', 'sessionController', 'sessionPersistence', 'sessions', 'typert'], async chatCtx => {
+    await registerGoogleChatControls(chatCtx, profiles)
   })
   ctx.on('loader/volatile-update', () => {
     // rc.5 has no llm/models-updated event. Its registry replacement emits the

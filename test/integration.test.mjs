@@ -311,5 +311,5 @@ test('rc.5 bundle reader accepts the published manifest and composes its install
   const plugin = await import(new URL(manifest.exports['.'].default, new URL('../', import.meta.url)))
   assert.equal(typeof plugin.apply, 'function')
   assert.ok(manifest.files.includes('cordis.patch.yml'))
-  assert.equal(evaluatePluginCompatibility(manifest, {}, '0.2.1-rc.5'), undefined)
+  for (const runtime of ['0.2.1-rc.5', '0.2.2-rc.1', '0.3.0-alpha.1', '1.0.0']) assert.equal(evaluatePluginCompatibility(manifest, {}, runtime), undefined, runtime)
 })

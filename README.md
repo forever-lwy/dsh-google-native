@@ -1,6 +1,8 @@
 # Google 原生供应商插件
 
-`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。待安装版本 `0.1.11` 针对 dsh `0.2.1-rc.5`，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
+`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。待安装版本 `0.1.12` 在 dsh `0.2.2-rc.1` 上构建测试，不按 dsh 版本拦截加载，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
+
+`0.1.12` 适配 dsh `0.2.2-rc.1`：不再按 dsh 版本拦截加载；会话聊天选项改用新的投影句柄读取，冷会话通过只读持久化句柄读取而不唤醒 Agent；`google_native_attach_file` 改用 0.2.2 的按步骤工具准入（`when`）决定是否对当前模型可见，取代旧的提示词过滤与 SDK 重渲染。
 
 `0.1.11` 在模型页的 **配置 Google 提供商** 中增加文件大小设置。AI Studio 可调整 **直接发送文件阈值（MiB）**，默认仍为 8；Vertex 可调整 **本地文件上限（MiB）**，默认仍为 16。两者都可调整 **单个文件附件大小上限（MiB）**，默认仍为 300。保存后后续请求使用新设置，刷新页面可恢复已保存的数值；正在执行的请求沿用准备时的配置。
 
@@ -39,7 +41,7 @@ npm pack --pack-destination ../releases
 在 dsh 的“插件 → 添加插件”中输入下面的**容器路径**，由用户确认安装和启用：
 
 ```text
-/plugins/releases/dsh-google-native-0.1.11.tgz
+/plugins/releases/dsh-google-native-0.1.12.tgz
 ```
 
 不要使用 `link:` 将源码连接到日常 `web` profile。下一次测试应提升版本并生成新文件名。现有 HMR 可以应用用户主动安装的版本；只有界面明确提示 `restart-required` 才需要安排重启。dsh `0.2.1-rc.5` 普通“已安装”页面没有第三方插件通用更新按钮，不能将较新上游界面的行为视为已具备。

@@ -11,6 +11,9 @@ import { Session, SessionId, SessionStore } from '@deepseek-ai/dsh-session'
 import { SessionQueryEngine } from '@deepseek-ai/dsh-session-query'
 import { SystemPrompt, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
+import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
+import * as PtcToolExecutor from '@deepseek-ai/dsh-tool-executor-ptc'
 import { AssistantStreamAccumulator, BlockAssembler, LlmRuntime, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { GoogleNativeAdapter } from '../lib/adapter.js'
 import { defaultProfile } from '../lib/config.js'
@@ -48,6 +51,7 @@ async function fixture(t, { provider = providers[0], model = MODEL, mode = 'nati
   t.after(async () => { await ctx.fiber.dispose(); await rm(directory, { recursive: true, force: true }); await rm(hostStorage, { recursive: true, force: true }) })
   new LlmRuntime(ctx)
   new SessionStore(ctx)
+  new SessionProjectionRegistry(ctx)
   new AgentRegistry(ctx)
   new OfflineQueries(ctx)
   new SystemPrompt(ctx, { includeHarnessIdentity: false })
@@ -161,7 +165,8 @@ async function fixture(t, { provider = providers[0], model = MODEL, mode = 'nati
       } catch (error) { return { logs: [], error: { kind: 'exception', message: error.message } } }
     },
   })
-  new ToolRuntime(ctx, { mode })
+  new ToolRuntime(ctx)
+  await ctx.plugin(mode === 'ptc' ? PtcToolExecutor : NativeToolExecutor)
   let pluginFiber
   if (mountPlugin) {
     ctx.provide('credentials', { resolve: async () => ({ value: 'offline-test-key' }) })
@@ -205,7 +210,15 @@ async function fixture(t, { provider = providers[0], model = MODEL, mode = 'nati
       headers: { 'content-type': 'text/event-stream' },
     })
   })
-  async function assembly() { return ctx.systemPrompt.assemble(assembleContextFor(agent)) }
+  const modelSelection = { provider, model }
+  async function toolSet(signal = new AbortController().signal) {
+    return ctx.tools.resolve({ agent, modelSelection, signal })
+  }
+  async function assembly() {
+    const set = await toolSet()
+    try { return await ctx.systemPrompt.assemble({ ...assembleContextFor(agent), modelSelection, toolSet: set }) }
+    finally { set.dispose() }
+  }
   async function bind(step = 0) {
     return agentEvents(ctx, agent).waterfall('agent/request', { turn: 1, step, signal: new AbortController().signal },
       async () => ({ provider, model }))
@@ -225,7 +238,11 @@ async function fixture(t, { provider = providers[0], model = MODEL, mode = 'nati
   }
   async function execute(call, signal = new AbortController().signal) {
     session.append('tool/call', { turn: 1, step: 0, callId: call.id, name: call.name, arguments: call.arguments })
-    const result = await ctx.tools.execute({ callId: call.id, name: call.name, arguments: JSON.parse(call.arguments), agent, signal })
+    const set = await toolSet()
+    let batch
+    try { batch = await ctx.tools.execute({ calls: [{ type: 'tool-call', id: call.id, name: call.name, arguments: call.arguments }], signal, agent, toolSet: set }) }
+    finally { set.dispose() }
+    const result = { ...batch.results[0].result, additionalContexts: batch.additionalContexts }
     results.push(result)
     const message = createToolResultMessage({ callId: call.id, content: result.content, isError: result.isError })
     session.append('tool/result', { turn: 1, step: 0, message,
