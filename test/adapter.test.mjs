@@ -116,10 +116,80 @@ test('search citations are visible and complete native grounding metadata is ret
   assert.deepEqual(chunks.at(-1).replayState.response.candidates[0].groundingMetadata, groundingMetadata)
 })
 
-test('blocked, empty and truncated streams never produce a successful terminal finish', async () => {
+test('blocked, empty and answerless truncated streams never produce a successful terminal finish', async () => {
   await assert.rejects(collect(translateStream(events({ promptFeedback: { blockReason: 'SAFETY' } }), input(), {})), error => error.code === 'CONTENT_FILTER')
   await assert.rejects(collect(translateStream(events({ candidates: [{ finishReason: 'STOP' }] }), input(), {})), error => error.code === 'EMPTY_RESPONSE')
-  await assert.rejects(collect(translateStream(events({ candidates: [{ content: { parts: [{ text: 'partial' }] } }] }), input(), {})), error => error.code === 'INCOMPLETE_RESPONSE')
+  await assert.rejects(collect(translateStream(events({ candidates: [{ content: { parts: [{ text: 'thinking', thought: true }] } }] }), input(), {})), error => error.code === 'INCOMPLETE_RESPONSE')
+  await assert.rejects(collect(translateStream(events({ candidates: [{ content: { parts: [{ text: '  \n' }] } }] }), input(), {})), error => error.code === 'INCOMPLETE_RESPONSE')
+})
+
+async function* cutAfter(error, ...items) { yield* items; throw error }
+const assembled = chunks => { const assembler = new BlockAssembler(); chunks.forEach(chunk => assembler.push(chunk)); return assembler }
+
+test('a stream that ends without a finish marker keeps its answer as a truncated reply', async () => {
+  const parts = [{ text: 'plan', thought: true, thoughtSignature: 'sig' }, { text: 'Long answer, part one' }]
+  const chunks = await collect(translateStream(events(
+    { candidates: [{ content: { parts: parts.slice(0, 1) } }] },
+    { candidates: [{ content: { parts: parts.slice(1) } }], usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 7, totalTokenCount: 17 } },
+  ), input(), {}))
+  const finish = chunks.at(-1)
+  assert.deepEqual(finish.reason, { kind: 'max-tokens' })
+  assert.equal(finish.replayState.response.incomplete.code, 'INCOMPLETE_RESPONSE')
+  assert.equal(chunks.find(chunk => chunk.type === 'usage').usage.outputTokens, 7)
+  const assembler = assembled(chunks)
+  const message = JSON.parse(JSON.stringify(assembler.message({ provider: ai, model: input().model, replayState: assembler.replayState })))
+  assert.deepEqual(message.content.map(block => block.type), ['reasoning', 'text', 'text'])
+  assert.equal(message.content[1].text, 'Long answer, part one')
+  assert.match(message.content[2].text, /输出未完成：Google 流在终止标记之前结束。以上是连接断开前已生成的内容；回复“继续”可接着写。/)
+  const replay = await translateMessages({ ...input(), messages: [message] }, {})
+  assert.deepEqual(replay.contents[0].parts.slice(0, 2), parts)
+})
+
+test('an upstream transport cut after answer text is salvaged with the transport failure', async () => {
+  const cut = Object.assign(new TypeError('terminated'), { cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }) })
+  const chunks = await collect(translateStream(cutAfter(cut, { candidates: [{ content: { parts: [{ text: 'Answer so far' }] } }] }), input(), {}))
+  assert.deepEqual(chunks.at(-1).reason, { kind: 'max-tokens' })
+  assert.equal(chunks.at(-1).replayState.response.incomplete.code, 'NETWORK')
+  assert.match(chunks.filter(chunk => chunk.type === 'text-delta').at(-1).text, /输出未完成：Google API 请求失败/)
+})
+
+test('salvaged replies never execute tool calls and keep native replay aligned', async () => {
+  const call = { functionCall: { id: 'c1', name: 'write', args: { path: 'a' } }, thoughtSignature: 'call-sig' }
+  const chunks = await collect(translateStream(cutAfter(new TypeError('terminated'),
+    { candidates: [{ content: { parts: [{ text: 'Intro' }, call, { text: 'More text' }] } }] }), input(), {}))
+  const assembler = assembled(chunks)
+  const message = JSON.parse(JSON.stringify(assembler.message({ provider: ai, model: input().model, replayState: assembler.replayState })))
+  assert.deepEqual(message.content.map(block => block.type), ['text', 'text', 'text'])
+  assert.equal(message.source.replayState.blocks.length, 3)
+  const replay = await translateMessages({ ...input(), messages: [message] }, {})
+  assert.deepEqual(replay.contents[0].parts.slice(0, 2), [{ text: 'Intro' }, { text: 'More text' }])
+})
+
+test('cancellation, protocol errors and cuts after the finish marker are not salvaged', async () => {
+  const controller = new AbortController()
+  async function* aborted() { yield { candidates: [{ content: { parts: [{ text: 'Answer' }] } }] }; controller.abort(); throw new DOMException('aborted', 'AbortError') }
+  await assert.rejects(collect(translateStream(aborted(), { ...input(), signal: controller.signal }, {})), error => error.name === 'AbortError')
+  await assert.rejects(collect(translateStream(events({ candidates: [{ content: { parts: [{ text: 'Answer' }, { functionCall: { name: 'x', willContinue: true } }] } }] }), input(), {})),
+    error => error.code === 'INVALID_TOOL_CALL')
+  const chunks = await collect(translateStream(cutAfter(new TypeError('terminated'), { candidates: [{ content: { parts: [{ text: 'Done' }] }, finishReason: 'STOP' }] }), input(), {}))
+  assert.deepEqual(chunks.at(-1).reason, { kind: 'stop' })
+  assert.equal(chunks.filter(chunk => chunk.type === 'text-delta').length, 1)
+})
+
+test('an SSE body that breaks mid-answer reaches DSH as a truncated reply through the adapter', async t => {
+  const profiles = profileSet()
+  t.mock.method(globalThis, 'fetch', async () => {
+    const encoder = new TextEncoder()
+    const body = new ReadableStream({ start(controller) {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ candidates: [{ content: { role: 'model', parts: [{ text: 'Half of a long answer' }] } }] })}\n\n`))
+      setTimeout(() => controller.error(new TypeError('terminated')), 5)
+    } })
+    return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } })
+  })
+  const adapter = new GoogleNativeAdapter({ attachments: {} }, { profiles: () => profiles, resolveApiKey: async () => 'offline-test-key' })
+  const chunks = await collect(adapter.stream(input()))
+  assert.deepEqual(chunks.at(-1).reason, { kind: 'max-tokens' })
+  assert.equal(assembled(chunks).blocks()[0].text, 'Half of a long answer')
 })
 
 test('adjacent generated audio chunks become one durable native file', async () => {
