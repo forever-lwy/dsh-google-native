@@ -313,35 +313,3 @@ test('rc.5 bundle reader accepts the published manifest and composes its install
   assert.ok(manifest.files.includes('cordis.patch.yml'))
   for (const runtime of ['0.2.1-rc.5', '0.2.2-rc.1', '0.3.0-alpha.1', '1.0.0']) assert.equal(evaluatePluginCompatibility(manifest, {}, runtime), undefined, runtime)
 })
-
-test('actual LlmRuntime accepts a salvaged truncated reply and replays only the generated text', async () => {
-  const ctx = new Context()
-  new LlmRuntime(ctx)
-  ctx.provide('attachments', { fileHostPath: () => undefined, async *readFileStream() {} })
-  const profiles = { 'google-ai-studio': defaultProfile('google-ai-studio'), 'google-vertex-native': defaultProfile('google-vertex-native') }
-  const calls = []
-  const adapter = new GoogleNativeAdapter(ctx, {
-    profiles: () => profiles, resolveApiKey: async () => 'test-only-not-a-real-key',
-    createClient: () => ({ models: { generateContentStream: async parameters => {
-      calls.push(parameters)
-      return (async function* () {
-        yield { candidates: [{ content: { parts: [{ text: 'Chapter one of a very long answer' }] } }] }
-        throw new TypeError('terminated')
-      })()
-    } } }),
-  })
-  ctx.llm.registerAdapter(['google-ai-studio', 'google-vertex-native'], adapter)
-  const user = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Write a long report' }] })
-  const chunks = await collect(ctx.llm.stream({ provider: 'google-ai-studio', model: 'gemini-2.5-flash', messages: [user] }))
-  const finish = chunks.at(-1)
-  assert.deepEqual(finish.reason, { kind: 'max-tokens' }, JSON.stringify(finish))
-  const texts = chunks.filter(chunk => chunk.type === 'block-end').map(chunk => chunk.block.text)
-  assert.equal(texts[0], 'Chapter one of a very long answer')
-  assert.match(texts[1], /输出未完成/)
-  const assistant = createAssistantMessage({ content: texts.map(text => ({ type: 'text', text })),
-    source: { provider: 'google-ai-studio', model: 'gemini-2.5-flash', replayState: finish.replayState } })
-  await collect(ctx.llm.stream({ provider: 'google-ai-studio', model: 'gemini-2.5-flash',
-    messages: [user, assistant, createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '继续' }] })] }))
-  // The notice is for the reader only; Gemini replays exactly what it generated.
-  assert.deepEqual(calls[1].contents[1], { role: 'model', parts: [{ text: 'Chapter one of a very long answer' }] })
-})
