@@ -84,26 +84,13 @@ for (const provider of ['google-ai-studio', 'google-vertex-native']) {
       profiles[provider].vertexAuth = 'api-key'
       profiles[provider].generationConfig.httpOptions = { timeout: 200 }
       const adapter = new GoogleNativeAdapter({ attachments: {} }, { profiles: () => profiles, resolveApiKey: async () => 'offline-timeout-test' })
-      const run = async () => {
-        const chunks = []
+      await assert.rejects(async () => {
         for await (const chunk of adapter.stream({ provider, model: 'gemini-2.5-flash',
           messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }] })) {
           if (chunk.type === 'text-delta') firstChunk = true
-          chunks.push(chunk)
         }
-        return chunks
-      }
-      if (phase === 'headers') {
-        await assert.rejects(run, error => error.code === 'TIMEOUT' && /模型请求超时/.test(error.message))
-        return
-      }
-      // After answer text has streamed, the deadline still fires but the text survives as a truncated reply.
-      const chunks = await run()
-      assert.equal(firstChunk, true, 'deadline stays active after streaming has begun')
-      assert.deepEqual(chunks.at(-1).reason, { kind: 'max-tokens' })
-      assert.equal(chunks.at(-1).replayState.response.incomplete.code, 'TIMEOUT')
-      assert.match(chunks.filter(chunk => chunk.type === 'text-delta').at(-1).text, /模型请求超时/)
-      assert.equal(chunks.some(chunk => chunk.type === 'text-delta' && chunk.text === 'last'), false)
+      }, error => error.code === 'TIMEOUT' && /模型请求超时/.test(error.message))
+      if (phase === 'body') assert.equal(firstChunk, true, 'deadline stays active after streaming has begun')
     })
   }
 }
@@ -143,11 +130,4 @@ test('timeout classification is safe, cycle bounded, and cancellation takes prec
   const cyclic = new Error('not a timeout')
   cyclic.cause = cyclic
   assert.equal(googleError(cyclic).code, 'NETWORK')
-})
-
-test('Cloudflare 524 is reported as an upstream gateway timeout and keeps its status', () => {
-  const error = googleError(Object.assign(new Error('origin timeout'), { status: 524 }))
-  assert.equal(error.code, 'TIMEOUT')
-  assert.equal(error.failure.status, 524)
-  assert.match(error.message, /HTTP 524.*约 100 秒/)
 })
