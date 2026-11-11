@@ -16,6 +16,8 @@ type FormProps = Pick<Props, 'read' | 'discover' | 'save' | 'useRemoteAccess' | 
     providerId: ProviderProfile['provider'];
 };
 /** Each Models-page provider card owns one route's configuration form. */
+/** Set on the host's `<li>` provider row that holds one of this plugin's cards. */
+export declare const NATIVE_ROW_ATTRIBUTE = "data-dsh-google-native-row";
 export declare function ProviderSettings(props: Props): import("react").JSX.Element | null;
 export declare function ProviderSettingsPage({ read, discover, save, useRemoteAccess, t, providerId: provider }: FormProps): import("react").JSX.Element;
 export {};

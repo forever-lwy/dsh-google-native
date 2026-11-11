@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-api-remote-access/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-models/client'
@@ -154,13 +154,26 @@ function selectedModels(draft: Draft): ProviderModel[] {
 }
 
 /** Each Models-page provider card owns one route's configuration form. */
+/** Set on the host's `<li>` provider row that holds one of this plugin's cards. */
+export const NATIVE_ROW_ATTRIBUTE = 'data-dsh-google-native-row'
+
 export function ProviderSettings(props: Props) {
   const [open, setOpen] = useState(false)
   const [visited, setVisited] = useState(false)
   const panelId = useId()
   const providerId = props.provider.provider
-  if (providerId !== 'google-ai-studio' && providerId !== 'google-vertex-native') return null
-  return <div className="dsh-google-provider-card" data-google-provider-card={providerId}>
+  const native = providerId === 'google-ai-studio' || providerId === 'google-vertex-native'
+  const cardRef = useRef<HTMLDivElement>(null)
+  // Mark the host's provider row so the stylesheet can address it without
+  // `:has()`, which made every DOM insertion on the page restyle widely.
+  useLayoutEffect(() => {
+    const row = cardRef.current?.closest('li')
+    if (!row) return
+    row.setAttribute(NATIVE_ROW_ATTRIBUTE, '')
+    return () => row.removeAttribute(NATIVE_ROW_ATTRIBUTE)
+  }, [native])
+  if (!native) return null
+  return <div ref={cardRef} className="dsh-google-provider-card" data-google-provider-card={providerId}>
     <button type="button" className="dsh-google-provider-button" aria-expanded={open} aria-controls={panelId}
       onClick={() => { setOpen(value => !value); setVisited(true) }}>{props.t(open ? 'closeConfiguration' : 'configure')}</button>
     <div id={panelId} hidden={!open} className="dsh-google-provider-card-panel">
