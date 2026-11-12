@@ -13,7 +13,7 @@ import type { GoogleProfile, Profiles } from './config.js'
 import { CAPABILITY_KEYS, configuredToolChoices, resolveCapabilities, unsupportedChoices } from './capabilities.js'
 import {
   chatRemoteInfo, chatRequestSchema, chatSetRequestSchema, chatSelectionSchema,
-  type GoogleChatRequest, type GoogleChatSetRequest,
+  type GoogleChatChoices, type GoogleChatRequest, type GoogleChatSetRequest,
   type GoogleChatSnapshot, type GoogleChatSourceSnapshot,
 } from './chat-remote.js'
 
@@ -128,6 +128,11 @@ export class GoogleChatControls extends TypertRemoteService {
     await this.ctx.sessions.flush(agent.session)
     signal.throwIfAborted()
     return this.snapshot(agent.session, request)
+  }
+
+  /** Current switches of one model in this session, used when the active route is known. */
+  choicesFor(session: Session, provider: string, model: string): GoogleChatChoices {
+    return this.snapshot(session, { provider, model }).choices
   }
 
   capture(session: Session): GoogleChatSourceSnapshot {

@@ -6,7 +6,7 @@ import type { ProjectionHandle } from '@deepseek-ai/dsh-session-projection';
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
 import { z } from 'zod';
 import type { Profiles } from './config.js';
-import { type GoogleChatRequest, type GoogleChatSetRequest, type GoogleChatSnapshot, type GoogleChatSourceSnapshot } from './chat-remote.js';
+import { type GoogleChatChoices, type GoogleChatRequest, type GoogleChatSetRequest, type GoogleChatSnapshot, type GoogleChatSourceSnapshot } from './chat-remote.js';
 declare const preferenceSchema: z.ZodObject<{
     revision: z.ZodNumber;
     selections: z.ZodArray<z.ZodObject<{
@@ -53,6 +53,8 @@ export declare class GoogleChatControls extends TypertRemoteService {
     private agent;
     get(request: GoogleChatRequest, signal: AbortSignal): Promise<GoogleChatSnapshot>;
     set(request: GoogleChatSetRequest, signal: AbortSignal): Promise<GoogleChatSnapshot>;
+    /** Current switches of one model in this session, used when the active route is known. */
+    choicesFor(session: Session, provider: string, model: string): GoogleChatChoices;
     capture(session: Session): GoogleChatSourceSnapshot;
     stamp(agent: Agent, message: UserMessage): void;
 }

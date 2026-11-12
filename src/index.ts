@@ -5,7 +5,7 @@ import { Config, GOOGLE_PROVIDERS, profilesOf } from './config.js'
 import { GoogleNativeAdapter } from './adapter.js'
 import { GoogleNativeService } from './service.js'
 import { registerNativeFileBridge } from './file-scope.js'
-import { registerGoogleChatControls } from './chat-controls.js'
+import { registerGoogleChatControls, type GoogleChatControls } from './chat-controls.js'
 import { createNativeGoogleClient, resolveGoogleApiKey } from './client-factory.js'
 import { registerGoogleProviderSettings } from './provider-settings.js'
 import { discoverGoogleModels } from './discovery.js'
@@ -46,8 +46,9 @@ export function apply(ctx: Context, config: Config): void {
     },
   ])
   registerNativeFileBridge(ctx)
+  let controls: GoogleChatControls | undefined
   ctx.inject(['tools', 'fs', 'workingDirectory', 'systemPrompt', 'sessionQuery'], toolCtx => {
-    registerNativeFileTool(toolCtx, profiles)
+    registerNativeFileTool(toolCtx, profiles, (session, provider, model) => controls?.choicesFor(session, provider, model))
   })
   new GoogleNativeService(ctx, adapter)
   const settingsNs = ctx.fiber.entry?.options.id ?? name
@@ -59,7 +60,8 @@ export function apply(ctx: Context, config: Config): void {
     })
   })
   ctx.inject(['sessionProjections', 'sessionController', 'sessionPersistence', 'sessions', 'typert'], async chatCtx => {
-    await registerGoogleChatControls(chatCtx, profiles)
+    chatCtx.effect(() => () => { controls = undefined })
+    controls = await registerGoogleChatControls(chatCtx, profiles)
   })
   ctx.on('loader/volatile-update', () => {
     // rc.5 has no llm/models-updated event. Its registry replacement emits the

@@ -9,7 +9,7 @@ import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { defaultProfile } from '../lib/config.js'
 import { GOOGLE_NATIVE_FILE_TOOL, registerNativeFileTool } from '../lib/native-file-tool.js'
 
-async function fixture(t, { provider = 'google-ai-studio', model = 'gemini-2.5-flash', cwd = '/workspace', data = Buffer.from('%PDF-1.7\noriginal\u0000bytes'), path = '/workspace/example.pdf', headerRoot = '/workspace' } = {}) {
+async function fixture(t, { provider = 'google-ai-studio', model = 'gemini-2.5-flash', cwd = '/workspace', data = Buffer.from('%PDF-1.7\noriginal\u0000bytes'), path = '/workspace/example.pdf', headerRoot = '/workspace', choices } = {}) {
   const ctx = new Context()
   t.after(() => ctx.fiber.dispose())
   new SystemPrompt(ctx, {})
@@ -39,7 +39,7 @@ async function fixture(t, { provider = 'google-ai-studio', model = 'gemini-2.5-f
     },
   })
   const agent = { options: { provider, model }, session: { id: 'session-under-test', header: { cwd: headerRoot }, requestHeader: () => ({ config: agent.options }) }, inject: message => injected.push(message) }
-  registerNativeFileTool(ctx, () => profiles)
+  registerNativeFileTool(ctx, () => profiles, choices)
   // 0.2.2: a model step resolves its admitted tool set from the selected route,
   // then the deployment executor runs the call batch against that set.
   const resolveTools = (signal = new AbortController().signal) => ctx.tools.resolve({ agent, modelSelection: { ...agent.options }, signal })
@@ -140,4 +140,35 @@ test('step admission shows the upload tool only for an eligible selected route a
   assert.ok(!names.includes(GOOGLE_NATIVE_FILE_TOOL))
   assert.ok(names.includes('unrelated'))
   assert.equal((await f.call()).isError, true, 'a hidden tool cannot be dispatched by name')
+})
+
+test('step admission follows the conversation switch on models that have one', async t => {
+  const asked = []
+  let current = { nativeFiles: true, search: false, urlContext: false, codeExecution: false, maps: false }
+  const f = await fixture(t, { choices: (session, provider, model) => { asked.push([session.id, provider, model]); return current } })
+  const visible = async () => {
+    const toolSet = await f.resolveTools()
+    try { return f.ctx.tools.schemas(f.agent, toolSet).map(tool => tool.name) } finally { toolSet.dispose() }
+  }
+  assert.ok((await visible()).includes(GOOGLE_NATIVE_FILE_TOOL))
+  assert.deepEqual(asked.at(-1), ['session-under-test', 'google-ai-studio', 'gemini-2.5-flash'])
+  current = { ...current, nativeFiles: false }
+  assert.ok(!(await visible()).includes(GOOGLE_NATIVE_FILE_TOOL), 'switching native files off removes the declaration')
+  assert.equal((await f.call()).isError, true, 'and the call cannot be dispatched by name')
+  assert.equal(f.reads.length, 0)
+  current = undefined
+  assert.ok((await visible()).includes(GOOGLE_NATIVE_FILE_TOOL), 'without chat controls the model capability decides')
+  // An image-only model has no native-file switch, so the switch is not consulted for it.
+  current = { nativeFiles: false, search: false, urlContext: false, codeExecution: false, maps: false }
+  let before = asked.length
+  f.profiles['google-ai-studio'].models = [{ id: 'custom-image-only', inputTypes: ['text', 'image'] }, { id: 'custom-text-only', inputTypes: ['text'] }]
+  f.agent.options = { provider: 'google-ai-studio', model: 'custom-image-only' }
+  assert.ok((await visible()).includes(GOOGLE_NATIVE_FILE_TOOL))
+  f.agent.options = { provider: 'google-ai-studio', model: 'custom-text-only' }
+  assert.ok(!(await visible()).includes(GOOGLE_NATIVE_FILE_TOOL))
+  assert.equal(asked.length, before)
+  before = asked.length
+  f.agent.options = { provider: 'other-provider', model: 'gemini-2.5-flash' }
+  assert.ok(!(await visible()).includes(GOOGLE_NATIVE_FILE_TOOL))
+  assert.equal(asked.length, before, 'another provider is rejected before the switch is read')
 })

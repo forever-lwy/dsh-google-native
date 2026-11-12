@@ -1,6 +1,6 @@
 {
   "name": "@forever-lwy/dsh-google-native",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "Native Google Gemini AI Studio and Vertex AI provider for DeepSeek Harness",
   "type": "module",
   "main": "lib/index.js",

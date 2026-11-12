@@ -1,6 +1,8 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment';
+import type { Session } from '@deepseek-ai/dsh-session';
 import { type Profiles } from './config.js';
+import type { GoogleChatChoices } from './chat-remote.js';
 export declare const GOOGLE_NATIVE_FILE_TOOL = "google_native_attach_file";
 export interface NativeFileToolReceipt {
     version: 1;
@@ -19,6 +21,8 @@ declare module '@deepseek-ai/dsh-llm' {
         };
     }
 }
+/** The conversation's current switches; returns undefined when chat controls are not mounted. */
+export type NativeFileChoices = (session: Session, provider: string, model: string) => GoogleChatChoices | undefined;
 /** Attach exact workspace bytes to the current conversation. No parser, image
  * normalizer, external model request, or credential resolver participates. */
-export declare function registerNativeFileTool(ctx: Context, profiles: () => Profiles): void;
+export declare function registerNativeFileTool(ctx: Context, profiles: () => Profiles, choices?: NativeFileChoices): void;
