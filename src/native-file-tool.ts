@@ -3,11 +3,13 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { FileAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-working-directory'
+import type { Session } from '@deepseek-ai/dsh-session'
 import { createUserMessage, LlmError, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import { defineTool, type ToolExecutionToken } from '@deepseek-ai/dsh-tools'
 import { resolveCapabilities } from './capabilities.js'
 import { assertNativeInputType, detectMimeType } from './files.js'
 import { GOOGLE_PROVIDERS, type GoogleInputType, type Profiles } from './config.js'
+import type { GoogleChatChoices } from './chat-remote.js'
 
 export const GOOGLE_NATIVE_FILE_TOOL = 'google_native_attach_file'
 export interface NativeFileToolReceipt {
@@ -47,16 +49,26 @@ function positive(value: number | undefined, fallback: number): number {
   return value
 }
 
+/** The conversation's current switches; returns undefined when chat controls are not mounted. */
+export type NativeFileChoices = (session: Session, provider: string, model: string) => GoogleChatChoices | undefined
+
 /** Attach exact workspace bytes to the current conversation. No parser, image
  * normalizer, external model request, or credential resolver participates. */
-export function registerNativeFileTool(ctx: Context, profiles: () => Profiles): void {
-  const eligible = (provider: string | undefined, modelId: string | undefined) => {
-    if (!provider || !modelId || !GOOGLE_PROVIDERS.some(value => value === provider)) return undefined
+export function registerNativeFileTool(ctx: Context, profiles: () => Profiles, choices?: NativeFileChoices): void {
+  // The tool exists only while the step runs on an enabled Google model. A
+  // model with native file input also needs the conversation's native-file
+  // switch on; without chat controls there is no switch and the capability
+  // decides. A model that only declares image input has no such switch and
+  // keeps the tool for images.
+  const eligible = (agent: Agent | undefined, provider: string | undefined, modelId: string | undefined) => {
+    if (!agent || !provider || !modelId || !GOOGLE_PROVIDERS.some(value => value === provider)) return undefined
     const profile = profiles()[provider as keyof Profiles]
     const model = profile.enabled ? profile.models.find(model => model.id === modelId) : undefined
     if (!model) return undefined
     const nativeFiles = resolveCapabilities(provider, model).nativeFiles
-    return nativeFiles || model.inputTypes?.includes('image') ? { profile, model, nativeFiles } : undefined
+    if (!nativeFiles) return model.inputTypes?.includes('image') ? { profile, model, nativeFiles } : undefined
+    const current = choices?.(agent.session, provider, modelId)
+    return current === undefined || current.nativeFiles ? { profile, model, nativeFiles } : undefined
   }
   const routeOf = (agent: Agent) => agent.session.requestHeader()?.config ?? agent.options
   const pending = new Map<ToolExecutionToken, { agent: Agent; receipts: NativeFileToolReceipt[] }>()
@@ -74,8 +86,8 @@ export function registerNativeFileTool(ctx: Context, profiles: () => Profiles): 
       if (!agent) throw new LlmError('原生文件上传需要当前会话中的模型调用。', 'NATIVE_FILE_AGENT_REQUIRED')
       exec.signal.throwIfAborted()
       const route = routeOf(agent)
-      const selected = eligible(route.provider, route.model)
-      if (!selected) throw new LlmError('当前模型未声明可用的 Google 原生文件输入能力。', 'UNSUPPORTED_NATIVE_CAPABILITY')
+      const selected = eligible(agent, route.provider, route.model)
+      if (!selected) throw new LlmError('当前对话未启用 Google 原生文件输入。', 'UNSUPPORTED_NATIVE_CAPABILITY')
       if (!path.trim() || path.length > 4096 || /[\u0000-\u001f\u007f]/.test(path) || /^[a-z][a-z0-9+.-]*:\/\//i.test(path)) {
         throw new LlmError('请提供工作区内的有效文件路径。', 'INVALID_FILE_PATH')
       }
@@ -122,11 +134,12 @@ export function registerNativeFileTool(ctx: Context, profiles: () => Profiles): 
         model: selected.model.id, callId: String(exec.callId), rootCallId: String(exec.rootCallId), attachment }
     },
   })
-  // 0.2.2 step admission: the step's captured model selection decides whether
-  // the tool participates. False removes it from the declarations, dispatch and
-  // the PTC SDK alike, so no prompt post-processing is needed.
+  // 0.2.2 step admission: the step's captured model selection and the
+  // conversation's switch decide whether the tool participates. False removes
+  // it from the declarations, dispatch and the PTC SDK alike, so no prompt
+  // post-processing is needed.
   ctx.tools.register(definition, {
-    when: ({ modelSelection }) => eligible(modelSelection.provider, modelSelection.model) !== undefined,
+    when: ({ agent, modelSelection }) => eligible(agent, modelSelection.provider, modelSelection.model) !== undefined,
   })
 
   // rc.5 preserves deferContext on late cancellation. Publish PTC files only
