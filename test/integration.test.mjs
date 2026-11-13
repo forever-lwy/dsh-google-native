@@ -76,7 +76,7 @@ test('native inputs retain exact mapped and unmapped core hints in multi-file or
   assert.ok(restored.messages[0].content[4].text.startsWith(projected.messages[0].content[3].text))
   assert.match(restored.messages[0].content[4].text, /cannot access a readable path/)
   for (const index of [1, 4]) {
-    assert.match(restored.messages[0].content[index].text, /original file is also attached natively/)
+    assert.match(restored.messages[0].content[index].text, /Available file contents are attached natively/)
     assert.match(restored.messages[0].content[index].text, /local-path note above concerns local file tools only/)
   }
   assert.equal(JSON.stringify([original, projected]), before)

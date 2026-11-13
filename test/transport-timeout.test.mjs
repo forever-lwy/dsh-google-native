@@ -129,5 +129,5 @@ test('timeout classification is safe, cycle bounded, and cancellation takes prec
   }
   const cyclic = new Error('not a timeout')
   cyclic.cause = cyclic
-  assert.equal(googleError(cyclic).code, 'NETWORK')
+  assert.equal(googleError(cyclic).code, 'TRANSPORT')
 })

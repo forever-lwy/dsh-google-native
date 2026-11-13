@@ -4,7 +4,7 @@ import { chatSourceSchema, type GoogleChatChoices } from './chat-remote.js'
 function recordedChoices(source: unknown, provider: string, model: string): GoogleChatChoices | undefined {
   if (typeof source !== 'object' || source === null || !('googleNative' in source)) return undefined
   const parsed = chatSourceSchema.safeParse(source.googleNative)
-  if (!parsed.success) throw new LlmError('已记录的 Google 原生选项无效，无法安全构建请求。', 'INVALID_NATIVE_OPTIONS')
+  if (!parsed.success) throw LlmError.fromFailure({ message: '已记录的 Google 原生选项无效，无法安全构建请求。', code: 'INVALID_NATIVE_OPTIONS' })
   return parsed.data.selections.find(item => item.provider === provider && item.model === model)?.choices
     ?? { nativeFiles: false, search: false, urlContext: false, codeExecution: false, maps: false }
 }

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import {
-  LlmAdapter, LlmError, assertUsableApiKey, attributionHeaders, ReasoningEffortId,
+  LlmAdapter, LlmError, assertUsableApiKey, attributionHeaders, ReasoningEffortId, resolveRetryPolicy,
   type GenerateOptions, type LlmModelInfo, type LlmResolvedModelInfo,
   type PreparedAdapterCall, type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
@@ -32,6 +32,11 @@ export class GoogleNativeAdapter extends LlmAdapter {
 
   providerInfo(provider: string) {
     return { id: provider, name: provider === 'google-ai-studio' ? 'Google AI Studio (Native)' : 'Google Vertex AI (Native)' }
+  }
+
+  providerRetryPolicy(provider: string) {
+    const profile = this.options.profiles()[provider as keyof Profiles]
+    return resolveRetryPolicy(profile?.retryPolicy, `google-native: ${provider} retryPolicy`)
   }
 
   private profile(provider: string): GoogleProfile {
@@ -130,10 +135,10 @@ export function buildGenerationConfig(profile: GoogleProfile, model: GoogleModel
     abortSignal: options.signal,
   }
   if (config.candidateCount !== undefined && config.candidateCount !== 1) {
-    throw new LlmError('dsh 单条回复要求 candidateCount=1；多候选请使用 nativeGoogle SDK 服务。', 'UNSUPPORTED_PARAMETER')
+    throw LlmError.fromFailure({ message: 'dsh 单条回复要求 candidateCount=1；多候选请使用 nativeGoogle SDK 服务。', code: 'UNSUPPORTED_PARAMETER' })
   }
   if (config.toolConfig?.functionCallingConfig?.streamFunctionCallArguments) {
-    throw new LlmError('增量函数参数请通过 nativeGoogle SDK 服务读取；dsh 工具执行要求完整 JSON 参数。', 'UNSUPPORTED_PARAMETER')
+    throw LlmError.fromFailure({ message: '增量函数参数请通过 nativeGoogle SDK 服务读取；dsh 工具执行要求完整 JSON 参数。', code: 'UNSUPPORTED_PARAMETER' })
   }
   if (options.temperature !== undefined) config.temperature = options.temperature
   const maxTokens = options.maxTokens ?? model?.maxTokens
@@ -178,7 +183,7 @@ export function buildGenerationConfig(profile: GoogleProfile, model: GoogleModel
   const choices = latestChatChoices(options)
   const capabilities = resolveCapabilities(profile.provider, model)
   if (choices) {
-    if (unsupportedChoices(capabilities, choices).length) throw new LlmError('该请求选择了当前模型不支持的原生能力。', 'UNSUPPORTED_NATIVE_CAPABILITY')
+    if (unsupportedChoices(capabilities, choices).length) throw LlmError.fromFailure({ message: '该请求选择了当前模型不支持的原生能力。', code: 'UNSUPPORTED_NATIVE_CAPABILITY' })
     config = applyNativeToolChoices(config, choices)
   }
   const nativeEnabled = Object.values(activeNativeToolChoices(config)).some(Boolean)
@@ -193,7 +198,7 @@ export function buildGenerationConfig(profile: GoogleProfile, model: GoogleModel
     if (Array.isArray(extra?.tools)) config.httpOptions = { ...config.httpOptions, extraBody: { ...extra, tools: [...extra.tools, functions] } }
     if (nativeEnabled && profile.provider === 'google-ai-studio') {
       const mode = config.toolConfig?.functionCallingConfig?.mode
-      if (mode === FunctionCallingConfigMode.AUTO) throw new LlmError('Google 原生工具与本地工具混用需要 VALIDATED 函数模式。', 'UNSUPPORTED_PARAMETER')
+      if (mode === FunctionCallingConfigMode.AUTO) throw LlmError.fromFailure({ message: 'Google 原生工具与本地工具混用需要 VALIDATED 函数模式。', code: 'UNSUPPORTED_PARAMETER' })
       config.toolConfig = { ...config.toolConfig, includeServerSideToolInvocations: true,
         functionCallingConfig: { ...config.toolConfig?.functionCallingConfig, mode: mode ?? FunctionCallingConfigMode.VALIDATED } }
     }

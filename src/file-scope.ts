@@ -74,7 +74,7 @@ export function restoreNativeFiles(options: GenerateOptions): GenerateOptions {
     const changedCall = explicit && source.role === 'tool' && projected.role === 'tool'
       && (projected.toolCallId !== source.toolCallId || projected.source.callId !== source.source.callId)
     if (projected.role !== source.role || projected.content.length !== source.content.length || changedCall) {
-      throw new LlmError('dsh 文件投影与原消息不匹配；无法安全发送 Google 原生附件', 'NATIVE_FILE_BRIDGE_MISMATCH')
+      throw LlmError.fromFailure({ message: 'dsh 文件投影与原消息不匹配；无法安全发送 Google 原生附件', code: 'NATIVE_FILE_BRIDGE_MISMATCH' })
     }
     let messageChanged = false
     const content = projected.content.flatMap((block, index) => {
@@ -84,7 +84,7 @@ export function restoreNativeFiles(options: GenerateOptions): GenerateOptions {
       if (source.role === 'assistant') return [originalBlock]
       const localHint = block.type === 'text' ? {
         ...block,
-        text: `${block.text}\nThe original file is also attached natively below. The local-path note above concerns local file tools only.`,
+        text: `${block.text}\nAvailable file contents are attached natively below. The local-path note above concerns local file tools only.`,
       } : block
       return [localHint, originalBlock]
     })

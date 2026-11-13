@@ -17,7 +17,7 @@ const model = 'gemini-2.5-flash'
 const choices = (change = {}) => ({ nativeFiles: true, search: false, urlContext: false, codeExecution: false, maps: false, ...change })
 const source = (selected, target = model, route = provider) => ({ kind: 'user', googleNative: { version: 1, selections: [{ provider: route, model: target, choices: selected }] } })
 const pdf = Buffer.from('%PDF-1.7\nNative or local processing')
-const nativeClarification = 'The original file is also attached natively below. The local-path note above concerns local file tools only.'
+const nativeClarification = 'Available file contents are attached natively below. The local-path note above concerns local file tools only.'
 const user = (selected, file = true, route = provider) => createUserMessage({ source: source(selected, model, route), content: [
   { type: 'text', text: 'Read the document' },
   ...(file ? [{ type: 'file', attachment: { attachmentId: 'a'.repeat(64), name: 'input.pdf', bytes: pdf.length } }] : []),
