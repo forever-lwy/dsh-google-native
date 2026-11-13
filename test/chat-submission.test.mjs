@@ -44,14 +44,14 @@ async function browser(t){
     getComputedStyle:dom.window.getComputedStyle.bind(dom.window)}
   async function load(name,expose){
     const metadata=JSON.parse(await readFile(new URL(import.meta.resolve(`${name}/package.json`)),'utf8'))
-    assert.equal(metadata.version,'0.2.2-rc.1','regression must use the deployed runtime protocol')
+    assert.equal(metadata.version,'0.2.2-rc.3','regression must use the deployed runtime protocol')
     const entry=new URL('./client.js',import.meta.resolve(name))
     let record
     sandbox.window.__ModuleLoader__={load:value=>{record=value}}
     let code=await readFile(entry,'utf8')
     // Only expose existing private constructors in memory. Their methods, the
     // actual Lexical editor, sendSession and receipt observer stay unchanged.
-    if(expose)code=code.replace('return module.exports;',`exports.__test={${expose}};return module.exports;`)
+    if(expose)code=code.replace(/return module\.exports(?=;|})/,`exports.__test={${expose}};return module.exports`)
     runInNewContext(code,sandbox,{filename:entry.pathname})
     assert.ok(record)
     return record.factory(name=>{assert.ok(Object.hasOwn(dependencies,name),`unseeded browser dependency ${name}`);return dependencies[name]})

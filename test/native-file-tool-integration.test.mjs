@@ -25,7 +25,7 @@ const TOOL = 'google_native_attach_file'
 const MODEL = 'offline-native-file-model'
 const providers = ['google-ai-studio', 'google-vertex-native']
 const originalFetch = globalThis.fetch
-const nativeClarification = 'The original file is also attached natively below. The local-path note above concerns local file tools only.'
+const nativeClarification = 'Available file contents are attached natively below. The local-path note above concerns local file tools only.'
 const pdf = Buffer.from('%PDF-1.7\n\0original binary document\xff', 'latin1')
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l1sAAAAASUVORK5CYII=', 'base64')
 const wav = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WAVEfmt '), Buffer.from([0, 255, 0, 128])])

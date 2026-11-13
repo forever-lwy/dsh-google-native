@@ -56,8 +56,8 @@ function replayEntries(message: RequestMessage, options: GenerateOptions): reado
 
 function parseArguments(value: string): Record<string, unknown> {
   let parsed: unknown
-  try { parsed = JSON.parse(value) } catch { throw new LlmError('Tool call contains invalid JSON arguments.', 'INVALID_TOOL_CALL') }
-  if (!isRecord(parsed)) throw new LlmError('Google function call arguments must be a JSON object.', 'INVALID_TOOL_CALL')
+  try { parsed = JSON.parse(value) } catch { throw LlmError.fromFailure({ message: 'Tool call contains invalid JSON arguments.', code: 'INVALID_TOOL_CALL' }) }
+  if (!isRecord(parsed)) throw LlmError.fromFailure({ message: 'Google function call arguments must be a JSON object.', code: 'INVALID_TOOL_CALL' })
   return parsed
 }
 
@@ -107,7 +107,7 @@ export async function translateMessages(options: GenerateOptions, files: NativeF
   for (const message of options.messages) {
     options.signal?.throwIfAborted()
     if (message.role === 'system') {
-      if (contents.length > 0) throw new LlmError('Google only accepts a leading system instruction.', 'UNSUPPORTED_SYSTEM_UPDATE')
+      if (contents.length > 0) throw LlmError.fromFailure({ message: 'Google only accepts a leading system instruction.', code: 'UNSUPPORTED_SYSTEM_UPDATE' })
       for (const block of message.content) {
         if (block.type !== 'text') throw new LlmError('Google system instructions support text content only.', 'UNSUPPORTED_CONTENT')
         system.push({ text: block.text })
@@ -124,7 +124,7 @@ export async function translateMessages(options: GenerateOptions, files: NativeF
     const replay = replayEntries(message, options)
     if (message.role === 'tool') {
       const identity = calls.get(message.toolCallId)
-      if (!identity) throw new LlmError('Tool result has no matching function call in Google conversation history.', 'INVALID_TOOL_RESULT')
+      if (!identity) throw LlmError.fromFailure({ message: 'Tool result has no matching function call in Google conversation history.', code: 'INVALID_TOOL_RESULT' })
       const text: string[] = []
       const unverified = unverifiedNativeFileResult(message)
       let mediaCount = 0
@@ -182,7 +182,7 @@ export async function translateMessages(options: GenerateOptions, files: NativeF
         else parts.push(await files.imagePart(block.attachment, options.signal, inputTypes))
       } else if (block.type === 'file') parts.push(await files.filePart(block.attachment, options.signal, inputTypes))
       else if (block.type === 'tool-call') {
-        if (message.role !== 'assistant') throw new LlmError('Function calls must appear in assistant messages.', 'INVALID_TOOL_CALL')
+        if (message.role !== 'assistant') throw LlmError.fromFailure({ message: 'Function calls must appear in assistant messages.', code: 'INVALID_TOOL_CALL' })
         parts.push({ functionCall: { id: block.id, name: block.name, args: parseArguments(block.arguments) } })
         calls.set(block.id, { name: block.name, nativeId: block.id })
       } else throw new LlmError(`Unsupported message content type: ${block.type}.`, 'UNSUPPORTED_CONTENT')

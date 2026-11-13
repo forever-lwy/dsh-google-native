@@ -83,48 +83,48 @@ export function registerNativeFileTool(ctx: Context, profiles: () => Profiles, c
     },
     async execute({ path }, exec) {
       const agent = exec.agent
-      if (!agent) throw new LlmError('原生文件上传需要当前会话中的模型调用。', 'NATIVE_FILE_AGENT_REQUIRED')
+      if (!agent) throw LlmError.fromFailure({ message: '原生文件上传需要当前会话中的模型调用。', code: 'NATIVE_FILE_AGENT_REQUIRED' })
       exec.signal.throwIfAborted()
       const route = routeOf(agent)
       const selected = eligible(agent, route.provider, route.model)
-      if (!selected) throw new LlmError('当前对话未启用 Google 原生文件输入。', 'UNSUPPORTED_NATIVE_CAPABILITY')
+      if (!selected) throw LlmError.fromFailure({ message: '当前对话未启用 Google 原生文件输入。', code: 'UNSUPPORTED_NATIVE_CAPABILITY' })
       if (!path.trim() || path.length > 4096 || /[\u0000-\u001f\u007f]/.test(path) || /^[a-z][a-z0-9+.-]*:\/\//i.test(path)) {
-        throw new LlmError('请提供工作区内的有效文件路径。', 'INVALID_FILE_PATH')
+        throw LlmError.fromFailure({ message: '请提供工作区内的有效文件路径。', code: 'INVALID_FILE_PATH' })
       }
       const cwd = ctx.workingDirectory.get(agent.session)
       const root = await ctx.fs.resolve(agent.session.header.cwd ?? cwd, { signal: exec.signal })
       const target = await ctx.fs.resolve(path, { cwd, signal: exec.signal })
-      if (!ctx.fs.contains(root, target)) throw new LlmError('只能上传当前会话工作区内的文件。', 'NATIVE_FILE_OUTSIDE_WORKSPACE')
+      if (!ctx.fs.contains(root, target)) throw LlmError.fromFailure({ message: '只能上传当前会话工作区内的文件。', code: 'NATIVE_FILE_OUTSIDE_WORKSPACE' })
       const before = await ctx.fs.stat(target, exec.signal)
-      if (!before || before.type !== 'file') throw new LlmError('上传目标必须是现有的普通文件。', 'NATIVE_FILE_NOT_REGULAR')
+      if (!before || before.type !== 'file') throw LlmError.fromFailure({ message: '上传目标必须是现有的普通文件。', code: 'NATIVE_FILE_NOT_REGULAR' })
       const maxFile = positive(selected.profile.files.maxFileBytes, 300 * MiB)
       const maxBytes = selected.profile.provider === 'google-vertex-native'
         ? Math.min(maxFile, positive(selected.profile.files.inlineMaxBytes, 16 * MiB)) : maxFile
-      if (before.size !== undefined && before.size > maxBytes) throw new LlmError('文件超过当前 Google 原生上传大小上限。', 'FILE_TOO_LARGE')
+      if (before.size !== undefined && before.size > maxBytes) throw LlmError.fromFailure({ message: '文件超过当前 Google 原生上传大小上限。', code: 'FILE_TOO_LARGE' })
       const name = target.displayPath.replaceAll('\\', '/').split('/').at(-1) || 'attachment'
       const prefix = await ctx.fs.readByteRange(target, { offset: 0, length: Math.min(32, maxBytes + 1) }, exec.signal)
       const mime = detectMimeType(name, prefix)
       const inputType: GoogleInputType = mime.startsWith('image/') ? 'image' : mime.startsWith('audio/') ? 'audio'
         : mime.startsWith('video/') ? 'video' : mime === 'application/pdf' ? 'pdf' : 'text'
-      if (inputType !== 'image' && !selected.nativeFiles) throw new LlmError('当前模型未启用此类原生文件输入。', 'UNSUPPORTED_NATIVE_CAPABILITY')
+      if (inputType !== 'image' && !selected.nativeFiles) throw LlmError.fromFailure({ message: '当前模型未启用此类原生文件输入。', code: 'UNSUPPORTED_NATIVE_CAPABILITY' })
       assertNativeInputType(inputType, selected.model.inputTypes)
       const data = async function* () {
         let offset = prefix.length
-        if (offset > maxBytes) throw new LlmError('文件超过当前 Google 原生上传大小上限。', 'FILE_TOO_LARGE')
+        if (offset > maxBytes) throw LlmError.fromFailure({ message: '文件超过当前 Google 原生上传大小上限。', code: 'FILE_TOO_LARGE' })
         if (offset) yield prefix
         while (true) {
           exec.signal.throwIfAborted()
           const length = Math.min(CHUNK_BYTES, maxBytes - offset + 1)
           const bytes = await ctx.fs.readByteRange(target, { offset, length }, exec.signal)
           if (!bytes.length) break
-          if (bytes.length > length || offset + bytes.length > maxBytes) throw new LlmError('文件超过当前 Google 原生上传大小上限。', 'FILE_TOO_LARGE')
+          if (bytes.length > length || offset + bytes.length > maxBytes) throw LlmError.fromFailure({ message: '文件超过当前 Google 原生上传大小上限。', code: 'FILE_TOO_LARGE' })
           offset += bytes.length
           yield bytes
         }
         const after = await ctx.fs.stat(target, exec.signal)
         if (!after || after.type !== 'file' || after.version !== before.version || after.size !== before.size
           || after.size !== undefined && after.size !== offset) {
-          throw new LlmError('文件在读取过程中发生变化，请重试。', 'NATIVE_FILE_CHANGED')
+          throw LlmError.fromFailure({ message: '文件在读取过程中发生变化，请重试。', code: 'NATIVE_FILE_CHANGED' })
         }
         exec.signal.throwIfAborted()
       }

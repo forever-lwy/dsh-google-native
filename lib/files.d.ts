@@ -27,6 +27,7 @@ export declare class NativeFileStore {
     validateInputType(ref: FileAttachmentRef, allowed: readonly GoogleInputType[], signal?: AbortSignal): Promise<void>;
     private validateSize;
     filePart(ref: FileAttachmentRef, signal?: AbortSignal, allowed?: readonly GoogleInputType[]): Promise<Part>;
+    private readFilePart;
     private upload;
     private waitForActive;
 }

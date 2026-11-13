@@ -17,6 +17,7 @@ export declare class GoogleNativeAdapter extends LlmAdapter {
         id: string;
         name: string;
     };
+    providerRetryPolicy(provider: string): import("@deepseek-ai/dsh-llm").ResolvedRetryPolicy;
     private profile;
     listModels(provider: string): Promise<readonly LlmModelInfo[]>;
     private modelInfo;

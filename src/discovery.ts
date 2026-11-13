@@ -154,32 +154,32 @@ export async function discoverGoogleModels(
     let pages = 0
     while (true) {
       requestSignal.throwIfAborted()
-      if (++pages > MAX_PAGES || !Array.isArray(pager.page)) throw new LlmError('上游模型列表分页无效或超过读取上限，请缩小列表或手动添加模型 ID。', 'MODEL_DISCOVERY_LIMIT')
+      if (++pages > MAX_PAGES || !Array.isArray(pager.page)) throw LlmError.fromFailure({ message: '上游模型列表分页无效或超过读取上限，请缩小列表或手动添加模型 ID。', code: 'MODEL_DISCOVERY_LIMIT' })
       for (const model of pager.page) {
         requestSignal.throwIfAborted()
-        if (++items > MAX_ITEMS) throw new LlmError('上游模型数量超过读取上限，请缩小列表或手动添加模型 ID。', 'MODEL_DISCOVERY_LIMIT')
+        if (++items > MAX_ITEMS) throw LlmError.fromFailure({ message: '上游模型数量超过读取上限，请缩小列表或手动添加模型 ID。', code: 'MODEL_DISCOVERY_LIMIT' })
         if (typeof model !== 'object' || model === null) continue
         const id = modelId(model.name)
         const entry = candidate(model, id === undefined ? undefined : rawPage.get(id))
         if (entry && !result.has(entry.id)) result.set(entry.id, entry)
-        if (result.size > MAX_MODELS) throw new LlmError(`可添加的上游模型超过 ${MAX_MODELS} 个，请缩小列表或手动添加模型 ID。`, 'MODEL_DISCOVERY_LIMIT')
+        if (result.size > MAX_MODELS) throw LlmError.fromFailure({ message: `可添加的上游模型超过 ${MAX_MODELS} 个，请缩小列表或手动添加模型 ID。`, code: 'MODEL_DISCOVERY_LIMIT' })
       }
       if (!pager.hasNextPage()) break
       const token = pager.params?.config?.pageToken
       // Empty terminal tokens occur in compatible proxies; do not let the SDK
       // turn them into an unbounded sequence of duplicate page requests.
       if (token === '' || token === null) break
-      if (typeof token !== 'string' || pageTokens.has(token)) throw new LlmError('上游模型列表返回了重复或无效的分页标记，请手动添加模型 ID。', 'MODEL_DISCOVERY_PAGINATION')
+      if (typeof token !== 'string' || pageTokens.has(token)) throw LlmError.fromFailure({ message: '上游模型列表返回了重复或无效的分页标记，请手动添加模型 ID。', code: 'MODEL_DISCOVERY_PAGINATION' })
       pageTokens.add(token)
-      if (pages >= MAX_PAGES) throw new LlmError('上游模型列表页数超过读取上限，请缩小列表或手动添加模型 ID。', 'MODEL_DISCOVERY_LIMIT')
+      if (pages >= MAX_PAGES) throw LlmError.fromFailure({ message: '上游模型列表页数超过读取上限，请缩小列表或手动添加模型 ID。', code: 'MODEL_DISCOVERY_LIMIT' })
       await pager.nextPage()
     }
     requestSignal.throwIfAborted()
     return [...result.values()]
   } catch (error) {
-    if (!signal?.aborted && timeout.aborted) throw new LlmError('获取上游模型列表超时，请检查连接或手动添加模型 ID。', 'MODEL_DISCOVERY_TIMEOUT')
+    if (!signal?.aborted && timeout.aborted) throw LlmError.fromFailure({ message: '获取上游模型列表超时，请检查连接或手动添加模型 ID。', code: 'MODEL_DISCOVERY_TIMEOUT' })
     const status = typeof error === 'object' && error !== null && 'status' in error ? error.status : undefined
-    if (status === 404 || status === 405 || status === 501) throw new LlmError('此上游未提供可用的 Google 原生模型列表，请检查 Base URL 或手动添加模型 ID。', 'MODEL_DISCOVERY_UNAVAILABLE', { status })
+    if (status === 404 || status === 405 || status === 501) throw LlmError.fromFailure({ message: '此上游未提供可用的 Google 原生模型列表，请检查 Base URL 或手动添加模型 ID。', code: 'MODEL_DISCOVERY_UNAVAILABLE', ...({ status }) })
     throw googleError(error, signal)
   }
 }

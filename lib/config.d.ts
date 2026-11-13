@@ -1,5 +1,6 @@
 import type { Volatile, VolatileSnapshot } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
+import { type RetryPolicyConfig } from '@deepseek-ai/dsh-llm';
 import type { GenerateContentConfig } from '@google/genai';
 import type { GoogleModelCapabilities } from './capabilities.js';
 export declare const GOOGLE_PROVIDERS: readonly ["google-ai-studio", "google-vertex-native"];
@@ -57,6 +58,8 @@ export interface GoogleProfileOptions {
     generationConfig: GenerateContentConfig;
     nativeTools: GoogleNativeTools;
     files: GoogleFileOptions;
+    /** Executed by DSH's provider-owned retry service. */
+    retryPolicy?: RetryPolicyConfig;
 }
 export interface GoogleProfile extends GoogleProfileOptions {
     provider: GoogleProvider;
@@ -165,6 +168,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             pollIntervalMs: z<number, number, "plain">;
             processingTimeoutMs: z<number, number, "plain">;
         }>>, "defined">;
+        retryPolicy: z<RetryPolicyConfig>;
     }>>>, NoInfer<Schemastery.ObjectT<NoInfer<{
         enabled: z<boolean, boolean, "defined">;
         apiKeyEnv: z<string, string, "defined">;
@@ -261,6 +265,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             pollIntervalMs: z<number, number, "plain">;
             processingTimeoutMs: z<number, number, "plain">;
         }>>, "defined">;
+        retryPolicy: z<RetryPolicyConfig>;
     }>>>, "volatile-defined">;
     vertex: z<NoInfer<Schemastery.ObjectS<NoInfer<{
         enabled: z<boolean, boolean, "defined">;
@@ -358,6 +363,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             pollIntervalMs: z<number, number, "plain">;
             processingTimeoutMs: z<number, number, "plain">;
         }>>, "defined">;
+        retryPolicy: z<RetryPolicyConfig>;
     }>>>, NoInfer<Schemastery.ObjectT<NoInfer<{
         enabled: z<boolean, boolean, "defined">;
         apiKeyEnv: z<string, string, "defined">;
@@ -454,6 +460,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             pollIntervalMs: z<number, number, "plain">;
             processingTimeoutMs: z<number, number, "plain">;
         }>>, "defined">;
+        retryPolicy: z<RetryPolicyConfig>;
     }>>>, "volatile-defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
     aiStudio: z<NoInfer<Schemastery.ObjectS<NoInfer<{
@@ -552,6 +559,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             pollIntervalMs: z<number, number, "plain">;
             processingTimeoutMs: z<number, number, "plain">;
         }>>, "defined">;
+        retryPolicy: z<RetryPolicyConfig>;
     }>>>, NoInfer<Schemastery.ObjectT<NoInfer<{
         enabled: z<boolean, boolean, "defined">;
         apiKeyEnv: z<string, string, "defined">;
@@ -648,6 +656,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             pollIntervalMs: z<number, number, "plain">;
             processingTimeoutMs: z<number, number, "plain">;
         }>>, "defined">;
+        retryPolicy: z<RetryPolicyConfig>;
     }>>>, "volatile-defined">;
     vertex: z<NoInfer<Schemastery.ObjectS<NoInfer<{
         enabled: z<boolean, boolean, "defined">;
@@ -745,6 +754,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             pollIntervalMs: z<number, number, "plain">;
             processingTimeoutMs: z<number, number, "plain">;
         }>>, "defined">;
+        retryPolicy: z<RetryPolicyConfig>;
     }>>>, NoInfer<Schemastery.ObjectT<NoInfer<{
         enabled: z<boolean, boolean, "defined">;
         apiKeyEnv: z<string, string, "defined">;
@@ -841,6 +851,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             pollIntervalMs: z<number, number, "plain">;
             processingTimeoutMs: z<number, number, "plain">;
         }>>, "defined">;
+        retryPolicy: z<RetryPolicyConfig>;
     }>>>, "volatile-defined">;
 }>>, "plain">;
 /** Capture an independent, validated generation so edits cannot affect an in-flight request. */

@@ -61,7 +61,7 @@ export function detectMimeType(name: string, prefix: Uint8Array): string {
     return named === 'audio/mp4' ? named : 'video/mp4'
   }
   if (named) return named
-  throw new LlmError(`Cannot determine a supported native MIME type for attachment ${JSON.stringify(name)}. Use a supported media/PDF/text filename or explicit native fileData with mimeType.`, 'UNSUPPORTED_FILE_TYPE')
+  throw LlmError.fromFailure({ message: `Cannot determine a supported native MIME type for attachment ${JSON.stringify(name)}. Use a supported media/PDF/text filename or explicit native fileData with mimeType.`, code: 'UNSUPPORTED_FILE_TYPE' })
 }
 
 function positiveOption(value: number | undefined, fallback: number, name: string): number {
@@ -73,7 +73,7 @@ function positiveOption(value: number | undefined, fallback: number, name: strin
 /** Model declarations constrain native inputs; they do not grant backend support. */
 export function assertNativeInputType(type: GoogleInputType, allowed: readonly GoogleInputType[] | undefined): void {
   if (allowed !== undefined && !allowed.includes(type)) {
-    throw new LlmError(`此模型未声明 ${type} 输入能力，请在模型高级设置中核对支持的输入类型。`, 'UNSUPPORTED_INPUT_TYPE')
+    throw LlmError.fromFailure({ message: `此模型未声明 ${type} 输入能力，请在模型高级设置中核对支持的输入类型。`, code: 'UNSUPPORTED_INPUT_TYPE' })
   }
 }
 
@@ -84,8 +84,18 @@ function assertMimeType(mimeType: string, allowed: readonly GoogleInputType[] | 
     : base.startsWith('audio/') ? 'audio' : base.startsWith('video/') ? 'video'
       : base === 'application/pdf' ? 'pdf'
         : base.startsWith('text/') || ['application/json', 'application/xml', 'application/javascript'].includes(base) ? 'text' : undefined
-  if (type === undefined) throw new LlmError('文件 MIME 类型不属于支持的原生输入类型。', 'UNSUPPORTED_FILE_TYPE')
+  if (type === undefined) throw LlmError.fromFailure({ message: '文件 MIME 类型不属于支持的原生输入类型。', code: 'UNSUPPORTED_FILE_TYPE' })
   assertNativeInputType(type, allowed)
+}
+
+/** Missing objects from imported history become a truthful text placeholder. */
+function unavailableAttachment(error: unknown): boolean {
+  return error instanceof Error && 'code' in error
+    && (error.code === 'ATTACHMENT_NOT_FOUND' || error.code === 'INVALID_ATTACHMENT_REF')
+}
+
+function unavailableFile(ref: FileAttachmentRef): Part {
+  return { text: `File ${JSON.stringify(ref.name)} is unavailable: its original contents are not stored. Ask for a new upload if its contents are needed.` }
 }
 
 /** Reads exclusively through the verified durable attachment store. */
@@ -126,24 +136,40 @@ export class NativeFileStore {
       return
     }
     let prefix = Buffer.alloc(0)
-    for await (const chunk of this.attachments.readFileStream(ref, signal)) {
+    try {
+      for await (const chunk of this.attachments.readFileStream(ref, signal)) {
+        signal?.throwIfAborted()
+        prefix = Buffer.concat([prefix, Buffer.from(chunk).subarray(0, 32 - prefix.byteLength)])
+        if (prefix.byteLength === 32) break
+      }
+    } catch (error) {
       signal?.throwIfAborted()
-      prefix = Buffer.concat([prefix, Buffer.from(chunk).subarray(0, 32 - prefix.byteLength)])
-      if (prefix.byteLength === 32) break
+      if (unavailableAttachment(error)) return
+      throw error
     }
     assertMimeType(detectMimeType(ref.name, prefix), allowed)
   }
 
   private validateSize(ref: FileAttachmentRef): void {
     if (!Number.isSafeInteger(ref.bytes) || ref.bytes < 0 || ref.bytes > this.options.maxFileBytes) {
-      throw new LlmError(`Attachment exceeds maxFileBytes (${this.options.maxFileBytes}).`, 'FILE_TOO_LARGE')
+      throw LlmError.fromFailure({ message: `Attachment exceeds maxFileBytes (${this.options.maxFileBytes}).`, code: 'FILE_TOO_LARGE' })
     }
     if (this.backend === 'vertex' && ref.bytes > this.options.inlineMaxBytes) {
-      throw new LlmError(`Vertex local attachment exceeds inlineMaxBytes (${this.options.inlineMaxBytes}). Supply a Google Cloud Storage gs:// URI as a native fileData part, or reduce the file.`, 'FILE_TOO_LARGE')
+      throw LlmError.fromFailure({ message: `Vertex local attachment exceeds inlineMaxBytes (${this.options.inlineMaxBytes}). Supply a Google Cloud Storage gs:// URI as a native fileData part, or reduce the file.`, code: 'FILE_TOO_LARGE' })
     }
   }
 
   async filePart(ref: FileAttachmentRef, signal?: AbortSignal, allowed?: readonly GoogleInputType[]): Promise<Part> {
+    try {
+      return await this.readFilePart(ref, signal, allowed)
+    } catch (error) {
+      signal?.throwIfAborted()
+      if (unavailableAttachment(error)) return unavailableFile(ref)
+      throw error
+    }
+  }
+
+  private async readFilePart(ref: FileAttachmentRef, signal?: AbortSignal, allowed?: readonly GoogleInputType[]): Promise<Part> {
     signal?.throwIfAborted()
     this.validateSize(ref)
     const key = `${ref.attachmentId}:${extname(ref.name).toLowerCase()}`
@@ -161,10 +187,10 @@ export class NativeFileStore {
     for await (const chunk of this.attachments.readFileStream(ref, signal)) {
       signal?.throwIfAborted()
       size += chunk.byteLength
-      if (size > ref.bytes || size > this.options.maxFileBytes) throw new LlmError('Attachment size does not match its durable reference.', 'INVALID_ATTACHMENT')
+      if (size > ref.bytes || size > this.options.maxFileBytes) throw LlmError.fromFailure({ message: 'Attachment size does not match its durable reference.', code: 'INVALID_ATTACHMENT' })
       chunks.push(Buffer.from(chunk))
     }
-    if (size !== ref.bytes) throw new LlmError('Attachment size does not match its durable reference.', 'INVALID_ATTACHMENT')
+    if (size !== ref.bytes) throw LlmError.fromFailure({ message: 'Attachment size does not match its durable reference.', code: 'INVALID_ATTACHMENT' })
     const bytes = Buffer.concat(chunks, size)
     const mimeType = detectMimeType(ref.name, bytes.subarray(0, 32))
     assertMimeType(mimeType, allowed)
@@ -183,13 +209,13 @@ export class NativeFileStore {
         for await (const chunk of this.attachments.readFileStream(ref, signal)) {
           signal?.throwIfAborted()
           size += chunk.byteLength
-          if (size > ref.bytes || size > this.options.maxFileBytes) throw new LlmError('Attachment size does not match its durable reference.', 'INVALID_ATTACHMENT')
+          if (size > ref.bytes || size > this.options.maxFileBytes) throw LlmError.fromFailure({ message: 'Attachment size does not match its durable reference.', code: 'INVALID_ATTACHMENT' })
           if (prefix.byteLength < 32) prefix = Buffer.concat([prefix, Buffer.from(chunk).subarray(0, 32 - prefix.byteLength)])
           // writeFile accepts Uint8Array and completes each chunk before the next is read.
           await file.writeFile(chunk)
         }
       } finally { await file.close() }
-      if (size !== ref.bytes) throw new LlmError('Attachment size does not match its durable reference.', 'INVALID_ATTACHMENT')
+      if (size !== ref.bytes) throw LlmError.fromFailure({ message: 'Attachment size does not match its durable reference.', code: 'INVALID_ATTACHMENT' })
       const mimeType = detectMimeType(ref.name, prefix)
       assertMimeType(mimeType, allowed)
       signal?.throwIfAborted()
@@ -220,13 +246,13 @@ export class NativeFileStore {
       while (true) {
         processingSignal.throwIfAborted()
         if (file.state === 'ACTIVE') return file
-        if (file.state === 'FAILED') throw new LlmError('Google could not process the uploaded file.', 'FILE_PROCESSING_FAILED')
+        if (file.state === 'FAILED') throw LlmError.fromFailure({ message: 'Google could not process the uploaded file.', code: 'FILE_PROCESSING_FAILED' })
         if (!file.name || file.state !== 'PROCESSING') throw new LlmError('Google Files API returned an unexpected processing state.', 'INVALID_RESPONSE')
         await delay(this.options.pollIntervalMs, undefined, { signal: processingSignal })
         file = await this.client.files.get({ name: file.name, config: { abortSignal: processingSignal, httpOptions: { headers: attributionHeaders() } } })
       }
     } catch (error) {
-      if (deadline.aborted && !signal?.aborted) throw new LlmError('Timed out waiting for Google file processing.', 'FILE_PROCESSING_TIMEOUT')
+      if (deadline.aborted && !signal?.aborted) throw LlmError.fromFailure({ message: 'Timed out waiting for Google file processing.', code: 'FILE_PROCESSING_TIMEOUT' })
       throw error
     }
   }

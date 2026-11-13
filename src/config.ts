@@ -1,6 +1,6 @@
 import type { Volatile, VolatileSnapshot } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { LlmError } from '@deepseek-ai/dsh-llm'
+import { LlmError, RetryPolicySchema, resolveRetryPolicy, type RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { GenerateContentConfig, ThinkingConfig } from '@google/genai'
 import type { GoogleModelCapabilities } from './capabilities.js'
@@ -66,6 +66,8 @@ export interface GoogleProfileOptions {
   generationConfig: GenerateContentConfig
   nativeTools: GoogleNativeTools
   files: GoogleFileOptions
+  /** Executed by DSH's provider-owned retry service. */
+  retryPolicy?: RetryPolicyConfig
 }
 
 export interface GoogleProfile extends GoogleProfileOptions {
@@ -149,6 +151,7 @@ function profileSchema(provider: GoogleProvider) {
       inlineThresholdBytes: z.number().min(1), inlineMaxBytes: z.number().min(1), maxFileBytes: z.number().min(1),
       pollIntervalMs: z.number().min(1), processingTimeoutMs: z.number().min(1),
     }).default({}).description('原生文件上传参数'),
+    retryPolicy: RetryPolicySchema,
   }).default(plainDefaults).volatile()
 }
 
@@ -167,6 +170,7 @@ export function profilesOf(config: Config): Profiles {
 
 export function validateProfile(provider: GoogleProvider, input: VolatileSnapshot<GoogleProfileOptions>): GoogleProfile {
   const profile = structuredClone({ ...input, provider }) as GoogleProfile
+  resolveRetryPolicy(profile.retryPolicy, `google-native: ${provider} retryPolicy`)
   credentialRef(profile.apiKeyEnv)
   normalizeNativeEndpoint(profile.baseURL, profile.apiVersion)
   if (profile.keyFile && !profile.keyFile.startsWith('/')) throw new LlmError('Google keyFile 必须是容器内绝对路径', 'INVALID_CONFIG')

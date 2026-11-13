@@ -63,7 +63,7 @@ export async function* translateStream(
     responseId = response.responseId ?? responseId
     modelVersion = response.modelVersion ?? modelVersion
     promptFeedback = response.promptFeedback ?? promptFeedback
-    if ((response.candidates?.length ?? 0) > 1) throw new LlmError('dsh 无法合并多个 Google 候选回复；请使用 nativeGoogle SDK 服务。', 'UNSUPPORTED_RESPONSE')
+    if ((response.candidates?.length ?? 0) > 1) throw LlmError.fromFailure({ message: 'dsh 无法合并多个 Google 候选回复；请使用 nativeGoogle SDK 服务。', code: 'UNSUPPORTED_RESPONSE' })
     const candidate = response.candidates?.[0]
     if (!candidate) continue
     const { content: _content, ...extra } = candidate
@@ -88,8 +88,8 @@ export async function* translateStream(
       } else if (part.functionCall) {
         yield* close()
         const call = part.functionCall
-        if (!call.name || call.partialArgs || call.willContinue) throw new LlmError('Google 返回了不完整的函数调用。', 'INVALID_TOOL_CALL')
-        if (call.id && nativeIds.has(call.id)) throw new LlmError('Google 返回了重复的函数调用 ID。', 'INVALID_TOOL_CALL')
+        if (!call.name || call.partialArgs || call.willContinue) throw LlmError.fromFailure({ message: 'Google 返回了不完整的函数调用。', code: 'INVALID_TOOL_CALL' })
+        if (call.id && nativeIds.has(call.id)) throw LlmError.fromFailure({ message: 'Google 返回了重复的函数调用 ID。', code: 'INVALID_TOOL_CALL' })
         if (call.id) nativeIds.add(call.id)
         const block: ContentBlock = { type: 'tool-call', id: ToolCallId(call.id ?? `google-${randomUUID()}`), name: call.name, arguments: JSON.stringify(call.args ?? {}) }
         const blockIndex = index++
@@ -129,11 +129,11 @@ export async function* translateStream(
   }
   yield* close()
   options.signal?.throwIfAborted()
-  if (promptFeedback?.blockReason) throw new LlmError(`Google 拦截了提示词（${promptFeedback.blockReason}）。`, 'CONTENT_FILTER')
-  if (!stop) throw new LlmError('Google 流在终止标记之前结束。', 'INCOMPLETE_RESPONSE')
+  if (promptFeedback?.blockReason) throw LlmError.fromFailure({ message: `Google 拦截了提示词（${promptFeedback.blockReason}）。`, code: 'CONTENT_FILTER' })
+  if (!stop) throw LlmError.fromFailure({ message: 'Google 流在终止标记之前结束。', code: 'INCOMPLETE_RESPONSE' })
   if (!['STOP', 'MAX_TOKENS'].includes(stop)) {
     const filtered = ['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'IMAGE_SAFETY'].includes(stop)
-    throw new LlmError(`Google 生成已终止（${stop}）。`, filtered ? 'CONTENT_FILTER' : 'INVALID_RESPONSE')
+    throw LlmError.fromFailure({ message: `Google 生成已终止（${stop}）。`, code: filtered ? 'CONTENT_FILTER' : 'INVALID_RESPONSE' })
   }
   if (!metadata.length) throw new LlmError('Google 返回了空回复。', 'EMPTY_RESPONSE')
   if (sources.size) {

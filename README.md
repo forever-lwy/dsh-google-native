@@ -1,6 +1,8 @@
 # Google 原生供应商插件
 
-`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。待安装版本 `0.1.12` 在 dsh `0.2.2-rc.1` 上构建测试，不按 dsh 版本拦截加载，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
+`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。当前版本 `0.1.18` 在 dsh `0.2.2-rc.3` 上构建测试，不按 dsh 版本拦截加载，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
+
+`0.1.18` 适配 rc.3 与 Zod 4.6.6。导入历史中没有实际内容的 PDF 等文件改为明确的不可用提示，不再阻断原生模型请求；真实存储错误和取消仍正常上报。Google 的服务端、连接错误采用 dsh 标准 `SERVER` / `TRANSPORT` 代码，由内置重试处理。每个提供方可在其配置中设置官方 `retryPolicy`，例如 `retryPolicy: { mode: normal, maxRetries: 3, retryableCodes: [SERVER, RATE_LIMIT, TIMEOUT, TRANSPORT] }`，配置热更新后生效。HTTP 状态码及错误文字的扩展规则、保留中断正文仍由可选的 dsh-auto-retry 提供。
 
 `0.1.17`：`google_native_attach_file` 的准入增加会话开关判断。支持原生文件输入的模型，只有在会话的“新上传文件使用模型原生能力”打开时才声明该工具；此前只按供应商和模型判断，关闭开关后工具仍会出现。
 
