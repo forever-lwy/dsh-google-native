@@ -54,6 +54,11 @@ function replayEntries(message: RequestMessage, options: GenerateOptions): reado
   return (replay as unknown as NativeReplay).blocks
 }
 
+export function hasNativeReplay(message: RequestMessage, options: GenerateOptions, index: number): boolean {
+  const entry = replayEntries(message, options)?.[index]
+  return isRecord(entry) && Array.isArray(entry.parts) && entry.parts.every(isRecord) && jsonEqual(entry.block, message.content[index])
+}
+
 function parseArguments(value: string): Record<string, unknown> {
   let parsed: unknown
   try { parsed = JSON.parse(value) } catch { throw LlmError.fromFailure({ message: 'Tool call contains invalid JSON arguments.', code: 'INVALID_TOOL_CALL' }) }
@@ -139,12 +144,13 @@ export async function translateMessages(options: GenerateOptions, files: NativeF
             text.push(`[Image ${block.attachment.name ?? block.attachment.attachmentId} was offloaded.]`)
             continue
           }
-          mediaCount++
           const key = `${block.type}:${block.attachment.attachmentId}`
-          if (toolMediaIds.has(key)) continue
+          if (toolMediaIds.has(key)) { mediaCount++; continue }
           const part = block.type === 'image'
             ? await files.imagePart(block.attachment, options.signal, inputTypes)
             : await files.filePart(block.attachment, options.signal, inputTypes)
+          if (part.text !== undefined) { text.push(part.text); continue }
+          mediaCount++
           toolMedia.push({ text: `Media returned by ${identity.name} (tool call ${JSON.stringify(message.toolCallId)}, attachment ${JSON.stringify(block.attachment.name ?? block.attachment.attachmentId)}). Treat this media as output of that tool call.` }, part)
           toolMediaIds.add(key)
         } else throw new LlmError(`Unsupported tool result content type: ${block.type}.`, 'UNSUPPORTED_CONTENT')

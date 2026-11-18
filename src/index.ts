@@ -25,7 +25,12 @@ export const inject = ['llm', 'attachments']
 export function apply(ctx: Context, config: Config): void {
   const profiles = () => profilesOf(config)
   profiles()
+  let controls: GoogleChatControls | undefined
   const adapter = new GoogleNativeAdapter(ctx, {
+    sessionNativeFiles: id => {
+      const session = ctx.get('sessions')?.get(id)
+      return session && controls?.nativeFilesFor(session)
+    },
     profiles,
     resolveApiKey: profile => resolveGoogleApiKey(ctx, profile),
   })
@@ -46,7 +51,6 @@ export function apply(ctx: Context, config: Config): void {
     },
   ])
   registerNativeFileBridge(ctx)
-  let controls: GoogleChatControls | undefined
   ctx.inject(['tools', 'fs', 'workingDirectory', 'systemPrompt', 'sessionQuery'], toolCtx => {
     registerNativeFileTool(toolCtx, profiles, (session, provider, model) => controls?.choicesFor(session, provider, model))
   })

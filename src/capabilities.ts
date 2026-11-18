@@ -47,6 +47,22 @@ const noCapabilities = (): ResolvedGoogleCapabilities => ({
 // https://docs.cloud.google.com/vertex-ai/generative-ai/docs/grounding/grounding-with-google-maps
 const knownModels = new Set(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3.8-flash', 'gemini-4-argon'])
 
+// The provider's document table lists Office support by exact model.
+// https://docs.cloud.google.com/vertex-ai/generative-ai/docs/multimodal/document-understanding
+const officeModels = new Set(['gemini-4-carbon', 'gemini-4-hydrogen'])
+
+export function acceptsOffice(profile: GoogleProfile, model: GoogleModelConfig | undefined): boolean {
+  if (!model) return false
+  const declared = model.inputTypes?.includes('office')
+  if (profile.baseURL?.trim()) {
+    const { hostname } = new URL(profile.baseURL)
+    const official = profile.provider === 'google-ai-studio' ? hostname === 'generativelanguage.googleapis.com'
+      : /^(?:[a-z0-9-]+-)?aiplatform\.googleapis\.com$/.test(hostname)
+    if (!official) return declared === true
+  }
+  return !knownModels.has(model.id) && (declared ?? officeModels.has(model.id))
+}
+
 /** No family/prefix matching: an unknown ID only exposes explicitly declared capabilities. */
 export function resolveCapabilities(
   provider: string,
@@ -55,9 +71,8 @@ export function resolveCapabilities(
   const result = noCapabilities()
   if (!model || !['google-ai-studio', 'google-vertex-native'].includes(provider)) return result
   const known = knownModels.has(model.id)
-  for (const key of CAPABILITY_KEYS) result[key] = model.capabilities?.[key]
-    ?? (key === 'nativeFiles' && model.inputTypes !== undefined
-      ? model.inputTypes.some(type => type === 'audio' || type === 'video' || type === 'pdf') : known)
+  const files = model.inputTypes === undefined ? known || officeModels.has(model.id) : model.inputTypes.some(type => type !== 'text')
+  for (const key of CAPABILITY_KEYS) result[key] = model.capabilities?.[key] ?? (key === 'nativeFiles' ? files : known)
   // AI Studio's documented mixed-tool mode requires tool context circulation.
   // The pinned SDK explicitly rejects that mode's flag on Vertex. Keep Vertex
   // mixed-tool dispatch conservative unless this exact connection opts in.

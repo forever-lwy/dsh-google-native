@@ -45,7 +45,7 @@ export const modelReasoningSchema = z.object({
 }).strict().refine(value => value.thinkingBudget === undefined || value.thinkingLevel === undefined,
   'Thinking budget and level cannot both be set.')
 export type GoogleModelReasoning = z.infer<typeof modelReasoningSchema>
-const inputTypesSchema = z.array(z.enum(['text', 'image', 'audio', 'video', 'pdf'])).min(1).max(5)
+const inputTypesSchema = z.array(z.enum(['text', 'image', 'audio', 'video', 'pdf', 'office'])).min(1).max(6)
   .refine(values => values.includes('text') && new Set(values).size === values.length,
     'Input types must include text and must not contain duplicates.')
 const responseModalitiesSchema = z.array(z.enum(['TEXT', 'IMAGE', 'AUDIO'])).min(1).max(3)

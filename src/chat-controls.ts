@@ -19,8 +19,13 @@ import {
 
 const RECORD = 'plugin:dsh-google-native/chat-controls' as const
 const PROJECTION = 'googleNativeChat' as const
-const preferenceSchema = z.object({ revision: z.number().int().nonnegative(), selections: z.array(chatSelectionSchema) }).strict()
+const preferenceSchema = z.object({ revision: z.number().int().nonnegative(), selections: z.array(chatSelectionSchema), nativeFiles: z.boolean().optional() }).strict()
 type Preferences = z.infer<typeof preferenceSchema>
+// Both independent plugins fold the file switch from the same session log.
+// Older saves moved the edited model to the end of their selections array.
+const peerFilePreference = z.object({
+  nativeFiles: z.boolean().optional(), selections: z.array(z.object({ choices: z.object({ nativeFiles: z.boolean() }) })),
+})
 
 declare module '@deepseek-ai/cordis' { interface Context { nativeGoogleChat: GoogleChatControls } }
 declare module '@deepseek-ai/dsh-session' {
@@ -34,11 +39,20 @@ declare module '@deepseek-ai/dsh-llm' {
 
 function foldPreferences(state: Preferences, event: Parameters<typeof pluginRecordOf>[0]): Preferences {
   const record = pluginRecordOf(event)
+  if (record?.type === 'plugin:dsh-claude-native/chat-controls') {
+    const peer = peerFilePreference.safeParse(record.data)
+    if (!peer.success) return state
+    const nativeFiles = peer.data.nativeFiles ?? peer.data.selections.at(-1)?.choices.nativeFiles
+    if (nativeFiles === undefined || nativeFiles === (state.nativeFiles ?? true)) return state
+    return { ...state, nativeFiles, revision: state.revision + 1 }
+  }
   if (record?.type !== RECORD) return state
   const parsed = preferenceSchema.safeParse(record.data)
   // These are replaceable UI preferences; accepted prompt sources carry the
   // authoritative immutable choices even if an old preference record is lost.
-  return parsed.success ? parsed.data : state
+  if (!parsed.success) return state
+  const nativeFiles = parsed.data.nativeFiles ?? parsed.data.selections.at(-1)?.choices.nativeFiles ?? state.nativeFiles ?? true
+  return { ...parsed.data, nativeFiles, revision: Math.max(state.revision + 1, parsed.data.revision) }
 }
 
 export class GoogleChatControls extends TypertRemoteService {
@@ -63,7 +77,7 @@ export class GoogleChatControls extends TypertRemoteService {
     const defaults = profile && model ? { nativeFiles: capabilities.nativeFiles, ...configuredToolChoices(profile, model) }
       : { nativeFiles: false, search: false, urlContext: false, codeExecution: false, maps: false }
     const remembered = state.selections.find(selection => selection.provider === request.provider && selection.model === request.model)?.choices
-    const choices = { ...defaults, ...remembered }
+    const choices = { ...defaults, ...remembered, nativeFiles: state.nativeFiles ?? true }
     for (const key of CAPABILITY_KEYS) choices[key] = choices[key] && capabilities[key]
     return { provider: request.provider, model: request.model, capabilities, choices, revision: state.revision }
   }
@@ -123,7 +137,8 @@ export class GoogleChatControls extends TypertRemoteService {
     const selections = state.selections.filter(item => item.provider !== request.provider || item.model !== request.model)
     selections.push(selection)
     signal.throwIfAborted()
-    appendPluginRecord(agent.session, RECORD, { revision: state.revision + 1, selections })
+    const nativeFiles = before.capabilities.nativeFiles ? request.choices.nativeFiles : state.nativeFiles ?? true
+    appendPluginRecord(agent.session, RECORD, { revision: state.revision + 1, selections, nativeFiles })
     // Acknowledgement means preferences reached the normal durability checkpoint.
     await this.ctx.sessions.flush(agent.session)
     signal.throwIfAborted()
@@ -134,6 +149,8 @@ export class GoogleChatControls extends TypertRemoteService {
   choicesFor(session: Session, provider: string, model: string): GoogleChatChoices {
     return this.snapshot(session, { provider, model }).choices
   }
+
+  nativeFilesFor(session: Session): boolean { return this.state(session).nativeFiles ?? true }
 
   capture(session: Session): GoogleChatSourceSnapshot {
     const selections: GoogleChatSourceSnapshot['selections'] = []
@@ -151,7 +168,7 @@ export class GoogleChatControls extends TypertRemoteService {
         selections.push({ provider: profile.provider, model: model.id, choices })
       }
     }
-    return { version: 1, selections }
+    return { version: 1, selections, nativeFiles: this.nativeFilesFor(session) }
   }
 
   stamp(agent: Agent, message: UserMessage): void {
@@ -179,7 +196,7 @@ export class GoogleChatControls extends TypertRemoteService {
 /** Mount only when the normal chat/session assembly is present. */
 export async function registerGoogleChatControls(ctx: Context, profiles: () => Profiles): Promise<GoogleChatControls> {
   const preferences = await ctx.sessionProjections.register({
-    key: PROJECTION, stateVersion: 1, stateSchema: preferenceSchema,
+    key: PROJECTION, stateVersion: 2, stateSchema: preferenceSchema,
     init: () => ({ revision: 0, selections: [] }), apply: foldPreferences,
   })
   const service = new GoogleChatControls(ctx, profiles, preferences)

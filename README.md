@@ -1,6 +1,8 @@
 # Google 原生供应商插件
 
-`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。当前版本 `0.1.18` 在 dsh `0.2.2-rc.3` 上构建测试，不按 dsh 版本拦截加载，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
+`dsh-google-native` 为 DeepSeek Harness 提供 Google AI Studio（Gemini Developer API）和 Vertex AI 两套原生后端，使用官方 `@google/genai` SDK。当前版本 `0.1.19` 在 dsh `0.2.2-rc.3` 上构建测试，不按 dsh 版本拦截加载，SDK 固定为 `2.32.0`，Node.js 要求 22 或以上。
+
+`0.1.19` 修复了 Word 等附件阻断后续对话的问题。原生文件开关在同一会话的 Google 与 Claude 模型间共用，旧会话可直接继续。
 
 `0.1.18` 适配 rc.3 与 Zod 4.6.6。导入历史中没有实际内容的 PDF 等文件改为明确的不可用提示，不再阻断原生模型请求；真实存储错误和取消仍正常上报。Google 的服务端、连接错误采用 dsh 标准 `SERVER` / `TRANSPORT` 代码，由内置重试处理。每个提供方可在其配置中设置官方 `retryPolicy`，例如 `retryPolicy: { mode: normal, maxRetries: 3, retryableCodes: [SERVER, RATE_LIMIT, TIMEOUT, TRANSPORT] }`，配置热更新后生效。HTTP 状态码及错误文字的扩展规则、保留中断正文仍由可选的 dsh-auto-retry 提供。
 
@@ -172,14 +174,14 @@ Base URL 应指向 **Google 原生 Gemini / Vertex API**，不能使用仅提供
 
 安装并启用本版本后，选择本插件的 Google 供应商和支持的模型，文件上传按钮旁会出现“原生能力”。切换到其他供应商或未声明这些能力的模型时，菜单立即隐藏；同一菜单中也只显示当前模型支持的选项。
 
-- **新上传文件使用模型原生能力**：打开时，新发送的 PDF、音频、视频等附件以 Google 原生文件输入发送，同时保留本地只读路径提示；关闭时，按 dsh 通常的文件路径方式交给模型及本地工具处理。此前已经发送的附件保留当时记录的方式，不会因修改开关而重新上传或改为另一种输入。
+- **文件使用模型原生能力**按会话保存。切换 Google AI Studio、Vertex 或 Claude 时沿用该值。打开后逐个检查附件，模型支持的格式携带原始字节和只读路径，其他格式只保留 dsh 的本地文件提示。关闭后，新文件和历史文件都走内置处理，重试同一条消息也生效。
 - **Google 搜索、URL 上下文、代码执行、Google 地图**：按需启用 Google 在服务端执行的工具。开关关闭时会移除该工具，即使供应商、模型参数或 `httpOptions.extraBody.tools` 中配置过它。
 
-这些选项按**会话、供应商与模型**分别保存。刷新页面会读取已保存的选择；切换回原模型会恢复该模型的设置。发送消息时会记录选项快照，所以排队消息、后续工具调用和会话回放使用对应消息的选择，不会被之后的开关修改。保存选项时暂时禁止发送，收到服务端确认后才恢复；正在回复或已有提交尚未完成时，选项不可修改。
+搜索、URL 上下文、代码执行和地图按会话、供应商和模型分别保存。发送时会记录选项快照，关闭文件开关时上传的文件在之后打开开关时仍使用本地处理。升级已有会话时，采用最近保存的文件选择。
 
 原生文件输入默认打开，延续 `0.1.0` 的行为。各原生工具初次使用时遵循供应商及模型的已有配置，不会默认全部启用。选择会覆盖对应工具的静态配置；其他原生生成参数继续生效。
 
-内置模型采用经过核对的能力表。对自定义模型 ID，默认不显示原生选项；在 `models[].capabilities` 明确声明后显示相应选项。声明包括 `nativeFiles`、`search`、`urlContext`、`codeExecution`、`maps`，并可用 `false` 隐藏某一项。逐模型输入类型包含音频、视频或 PDF 时，也会显示原生文件选项；其他原生工具仍需各自的能力声明。参考[聊天能力示例](examples/chat-capabilities.yaml)。这些声明不提高 Google 模型本身的能力、权限或配额。
+内置模型采用经过核对的能力表。对自定义模型 ID，默认不显示原生选项；在 `models[].capabilities` 明确声明后显示相应选项。声明包括 `nativeFiles`、`search`、`urlContext`、`codeExecution`、`maps`，并可用 `false` 隐藏某一项。逐模型输入类型包含图片、音频、视频、PDF 或 Office 时，也会显示原生文件选项；其他原生工具仍需各自的能力声明。参考[聊天能力示例](examples/chat-capabilities.yaml)。这些声明不提高 Google 模型本身的能力、权限或配额。
 
 `functionCallingWithNativeTools` 表示该连接是否支持在一次请求中同时使用上述原生工具和 dsh 本地函数工具，它本身不是聊天复选框。未声明支持混用的连接在启用原生工具时，会省略同一请求的本地函数声明，并在菜单中提示。AI Studio 的已核对新模型可按能力表混用；Vertex 和其他模型采用保守默认值。需要覆盖时，应先确认具体模型及连接支持该组合。
 
@@ -187,7 +189,7 @@ Base URL 应指向 **Google 原生 Gemini / Vertex API**，不能使用仅提供
 
 ### 让模型自己读取工作区原生文件
 
-本插件提供 `google_native_attach_file`，参数为 `{ "path": "reports/example.pdf" }`。只有当前步骤实际使用本插件的 Google 模型、该模型支持原生文件输入，并且会话里“新上传文件使用模型原生能力”处于打开状态时，模型才会看到这个工具；关闭该开关后，从下一步起工具不再出现。只声明图片输入、没有这个开关的模型仍可用它读取截图。切换到其他供应商或未声明支持的模型时，工具会从模型可见的声明和 PTC SDK 中移除，直接猜测工具名也不能读取文件。
+模型可调用 `google_native_attach_file` 附加工作区文件。当前模型支持原生文件且本会话已打开开关时，工具会出现在可用列表中，图片模型也遵循此开关。
 
 可以这样要求模型：
 
@@ -197,9 +199,9 @@ Base URL 应指向 **Google 原生 Gemini / Vertex API**，不能使用仅提供
 
 普通调用与 PTC 附加的原生文件均保留 dsh 给出的附件副本只读路径，供本地工具读取或复制。该路径指向保存后的附件副本，原始工作区文件仍按原位置保留；需要修改附件时，先复制到工作区的可写路径。
 
-相对路径以当前会话工作目录解析，文件必须位于会话原始工作区内；没有原始目录时使用当前工作目录。目录、特殊文件、外部 URL 以及指向工作区外的符号链接均不能上传。文件在读取时改变、超出本后端文件大小限制，或模型未声明对应输入类型时，工具会报告错误。一次调用附加一个完整文件；需要拆分时，应先生成格式有效的独立文件，再分别附加。
+相对路径以当前会话工作目录解析，文件必须位于会话原始工作区内；没有原始目录时使用当前工作目录。目录、特殊文件、外部 URL 以及指向工作区外的符号链接均不能上传。遇到格式或模型不支持的文件，工具返回已有工作区路径供内置文件工具读取。原生文件在读取中改变或超过传输大小限制时，工具会报告相应原因。一次调用附加一个完整文件；需要拆分时，应先生成格式有效的独立文件，再分别附加。
 
-此工具是模型明确选择的原生附件操作，独立于“新上传文件使用模型原生能力”这个用户上传开关。现有用户附件仍保持原来的处理方式。文件与产生它的会话、供应商、模型和工具调用绑定，并保存来源记录；切换到其他模型后需要重新调用。取消、工具失败、策略阻止，以及策略移除最终附件的情况均不会把该文件作为原生输入发送。PTC 外层失败或取消也不会发布待附加文件。
+工具结果与产生它的会话、供应商、模型和工具调用绑定。切换到其他模型后可使用已有只读路径。取消、工具失败、策略阻止或移除附件时，会话只保留已获准的结果。PTC 外层失败或取消时，待附加文件不会进入会话。
 
 上传限制沿用供应商 `files` 配置和逐模型输入类型。标准 Vertex 的本地附件默认最高 16 MiB，AI Studio 大文件仍由下一次请求中的 Files API 上传；工具成功表示本地原始附件已准备好，实际 Google 上传或模型请求仍可能失败。工具需要正常挂载 dsh 的 tools、fs、workingDirectory、systemPrompt 和 sessionQuery 服务，遵循现有工具执行策略。原生搜索等工具与本地函数工具不能混用的模型，仍受前述 Google 工具组合限制。
 
@@ -247,7 +249,11 @@ Google 原生搜索返回 `groundingMetadata`，包括来源、支持片段、�
 
 ### 文件与多模态限制
 
-在普通聊天界面上传附件即可，插件在请求构建期间读取原有持久附件引用，恢复原始文件输入，不依赖聊天文本中的文件路径或特殊标记。文件会以 `inlineData` 或 `fileData` 发送。AI Studio 默认超过 8 MiB 时使用 Files API，并等待文件处理到 `ACTIVE`；`FAILED`、等待超时或取消会明确结束请求。上传句柄缓存仅在其有效期内复用；Google 临时文件按远端有效期过期，插件不主动删除远端文件。
+普通文件按当前模型声明的输入类型分流。PDF、纯文本（包括 Markdown、CSV、JSON 等文本文件）、PNG、JPEG、WebP、HEIC、HEIF，以及受支持的音视频格式可以原生发送。常用音频包括 WAV、MP3、AIFF、AAC、FLAC、OGG 和 M4A，视频包括 MP4、MPEG、MOV、AVI 和 WebM。GIF 文件及无法识别的格式使用本地文件工具。[图片格式](https://ai.google.dev/gemini-api/docs/image-understanding#supported-formats) · [音频格式](https://ai.google.dev/gemini-api/docs/audio#supported-formats) · [视频格式](https://ai.google.dev/gemini-api/docs/video-understanding#supported-formats)
+
+Word、Excel、PowerPoint 和 OpenDocument 默认使用内置文件处理。官方连接的 Gemini 4 Hydrogen 和 4 Carbon 在模型输入类型设为继承时可原生接收 DOC、DOCX、DOTX、ODT、PPT、PPTX、ODP、XLS、XLSX、ODS。使用其他已确认兼容的模型或中转时，可在模型高级设置的输入类型里勾选 **Office / OpenDocument**。同一条消息可同时包含原生附件与本地路径。[Gemini 文档输入](https://ai.google.dev/gemini-api/docs/generate-content/document-processing#office-documents) · [Vertex 分模型格式表](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/multimodal/document-understanding#supported-models)
+
+在普通聊天界面上传附件即可，插件在请求构建期间读取原有持久附件引用，恢复原始文件输入，不依赖聊天文本中的文件路径或特殊标记。通过类型检查的文件以 `inlineData` 或 `fileData` 发送。AI Studio 默认超过 8 MiB 时使用 Files API，并等待文件处理到 `ACTIVE`；`FAILED`、等待超时或取消会明确结束请求。上传句柄缓存仅在其有效期内复用；Google 临时文件按远端有效期过期，插件不主动删除远端文件。
 
 原生模式仍沿用 dsh 的本地附件存储，不会自动把上传文件复制进项目目录。对于普通文件附件以及工具附加的原始图片等文件，模型请求同时保留 dsh 生成的文件名、大小、本地只读路径及“先复制到可写位置再修改”的提示，因此同一模型可以直接理解原生内容，也可以让本地工具读取或复制附件。路径使用 dsh 对当前执行环境的映射；若环境没有提供可读路径，会保留对应的不可访问提示，并说明该限制只影响本地工具，模型仍可读取原生内容。插件不编造宿主机路径，不改变文件原始字节，不增加解析器或额外模型请求。
 

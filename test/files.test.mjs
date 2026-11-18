@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { access, readFile } from 'node:fs/promises'
 import { detectMimeType, NativeFileStore } from '../lib/files.js'
+import { acceptsOffice } from '../lib/capabilities.js'
 
 const ref = (data, name = 'document.pdf') => ({ attachmentId: 'sha256-test', name, bytes: data.length })
 const bytes = Buffer.from('%PDF-1.7\nexample')
@@ -21,6 +22,36 @@ test('small PDF uses unchanged native inlineData bytes', async () => {
   const store = new NativeFileStore({}, 'ai-studio', attachmentStore(bytes))
   const part = await store.filePart(ref(bytes))
   assert.deepEqual(part, { inlineData: { mimeType: 'application/pdf', data: bytes.toString('base64') } })
+})
+
+test('Office admission follows the verified endpoint and model; a PDF declaration alone does not grant it', () => {
+  for (const [provider, baseURL] of [['google-ai-studio', 'https://generativelanguage.googleapis.com/v1beta'],
+    ['google-vertex-native', 'https://us-central1-aiplatform.googleapis.com']]) {
+    for (const profile of [{ provider }, { provider, baseURL }]) {
+      assert.equal(acceptsOffice(profile, { id: 'gemini-4-hydrogen' }), true)
+      assert.equal(acceptsOffice(profile, { id: 'gemini-4-carbon', inputTypes: ['text', 'pdf'] }), false)
+      assert.equal(acceptsOffice(profile, { id: 'gemini-2.5-flash', inputTypes: ['text', 'office'] }), false)
+    }
+    const relay = { provider, baseURL: 'https://relay.invalid' }
+    assert.equal(acceptsOffice(relay, { id: 'gemini-4-hydrogen' }), false)
+    assert.equal(acceptsOffice(relay, { id: 'relay-model', inputTypes: ['text', 'office'] }), true)
+  }
+})
+
+test('unsupported images and files keep local access before native size limits or uploads', async () => {
+  const gif = Buffer.from('GIF89a')
+  let reads = 0
+  const store = new NativeFileStore({}, 'vertex', {
+    imageHostPath: () => '/host/animation.gif',
+    async *readFileStream() { reads++; yield gif },
+  }, { maxFileBytes: 1 }, () => '/readonly/animation.gif')
+  assert.equal(await store.canSendFile(ref(gif, 'book.DOCX'), undefined, false), false)
+  assert.equal(reads, 0)
+  assert.equal(await store.canSendFile(ref(gif, 'disguised.png'), undefined, false), false)
+  assert.deepEqual(await store.imagePart({ ...ref(gif, 'animation.gif'), mediaType: 'image/gif' }), {
+    text: 'Read the normalized GIF with local file tools at "/readonly/animation.gif" (read-only).',
+  })
+  assert.equal(reads, 1)
 })
 
 test('AI Studio sends an audio file at the configured threshold inline and uploads it above that threshold', async () => {

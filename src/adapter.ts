@@ -8,16 +8,17 @@ import {
 import { GoogleGenAI, FunctionCallingConfigMode, type GenerateContentConfig, type GoogleGenAIOptions, type ThinkingLevel, type Tool } from '@google/genai'
 import { type GoogleProfile, type GoogleModelConfig, type Profiles } from './config.js'
 import { NativeFileStore } from './files.js'
-import { translateMessages } from './messages.js'
+import { hasNativeReplay, translateMessages } from './messages.js'
 import { restoreNativeFiles } from './file-scope.js'
 import { googleError } from './errors.js'
 import { translateStream } from './stream.js'
 import { createNativeGoogleClient } from './client-factory.js'
-import { activeNativeToolChoices, applyNativeToolChoices, resolveCapabilities, unsupportedChoices } from './capabilities.js'
+import { acceptsOffice, activeNativeToolChoices, applyNativeToolChoices, resolveCapabilities, unsupportedChoices } from './capabilities.js'
 import { latestChatChoices } from './request-controls.js'
 import { withoutRawModelOverrides } from './native-overrides.js'
 
 export interface GoogleAdapterOptions {
+  sessionNativeFiles?: (id: NonNullable<GenerateOptions['sessionId']>) => boolean | undefined
   profiles: () => Profiles
   resolveApiKey: (profile: GoogleProfile) => Promise<string | undefined>
   /** Dependency injection for offline protocol tests. */
@@ -96,7 +97,9 @@ export class GoogleNativeAdapter extends LlmAdapter {
     const existing = this.connections.get(identity)
     if (existing) return existing
     const client = createNativeGoogleClient(profile, apiKey, this.options.createClient)
-    const connection = { client, files: new NativeFileStore(client, vertex ? 'vertex' : 'ai-studio', this.ctx.attachments, profile.files) }
+    const files = new NativeFileStore(client, vertex ? 'vertex' : 'ai-studio', this.ctx.attachments, profile.files,
+      path => this.ctx.get('fs')?.processPathFromHostPath(path))
+    const connection = { client, files }
     // Bound stale generations without invalidating any in-flight connection.
     if (this.connections.size >= 16) this.connections.delete(this.connections.keys().next().value!)
     this.connections.set(identity, connection)
@@ -108,17 +111,23 @@ export class GoogleNativeAdapter extends LlmAdapter {
   }
 
   private async *streamProfile(profile: GoogleProfile, projected: GenerateOptions, boundConnection?: Connection): AsyncGenerator<StreamChunk> {
-    const options = restoreNativeFiles(projected)
     try {
-      options.signal?.throwIfAborted()
-      const model = profile.models.find(item => item.id === options.model)
-      const config = buildGenerationConfig(profile, model, options)
+      projected.signal?.throwIfAborted()
+      const model = profile.models.find(item => item.id === projected.model)
+      const config = buildGenerationConfig(profile, model, projected)
       const { client, files } = boundConnection ?? await this.connection(profile)
+      const sessionFiles = projected.sessionId === undefined ? undefined : this.options.sessionNativeFiles?.(projected.sessionId)
+      const capable = resolveCapabilities(profile.provider, model).nativeFiles
+      const office = acceptsOffice(profile, model)
+      const options = await restoreNativeFiles(projected, (block, source, index, enabled) => {
+        if (source.role === 'assistant' && hasNativeReplay(source, projected, index)) return true
+        return enabled && capable && files.canSendFile(block.attachment, model?.inputTypes, office, projected.signal)
+      }, sessionFiles)
       const messages = await translateMessages(options, files, model?.inputTypes)
       if (messages.systemInstruction) config.systemInstruction = messages.systemInstruction
       const stream = await client.models.generateContentStream({ model: options.model, contents: messages.contents, config })
       yield* translateStream(stream, options, this.ctx.attachments)
-    } catch (error) { throw googleError(error, options.signal) }
+    } catch (error) { throw googleError(error, projected.signal) }
   }
 }
 
@@ -183,7 +192,7 @@ export function buildGenerationConfig(profile: GoogleProfile, model: GoogleModel
   const choices = latestChatChoices(options)
   const capabilities = resolveCapabilities(profile.provider, model)
   if (choices) {
-    if (unsupportedChoices(capabilities, choices).length) throw LlmError.fromFailure({ message: '该请求选择了当前模型不支持的原生能力。', code: 'UNSUPPORTED_NATIVE_CAPABILITY' })
+    if (unsupportedChoices(capabilities, { ...choices, nativeFiles: false }).length) throw LlmError.fromFailure({ message: '该请求选择了当前模型不支持的原生能力。', code: 'UNSUPPORTED_NATIVE_CAPABILITY' })
     config = applyNativeToolChoices(config, choices)
   }
   const nativeEnabled = Object.values(activeNativeToolChoices(config)).some(Boolean)

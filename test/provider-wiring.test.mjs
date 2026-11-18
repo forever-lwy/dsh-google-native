@@ -72,7 +72,7 @@ test('the mounted plugin admits the attach tool only on its own route while the 
   const before = await ctx.nativeGoogleChat.get(request, signal)
   const off = await ctx.nativeGoogleChat.set({ ...request, choices: { ...before.choices, nativeFiles: false }, expectedRevision: before.revision }, signal)
   assert.equal(await visible('google-ai-studio', 'gemini-4-argon'), false, 'the saved switch removes the tool from the next step')
-  assert.equal(await visible('google-ai-studio', 'gemini-3.8-flash'), true, 'another model of the session keeps its own switch')
+  assert.equal(await visible('google-ai-studio', 'gemini-3.8-flash'), false, 'another model inherits the session switch')
   await ctx.nativeGoogleChat.set({ ...request, choices: { ...off.choices, nativeFiles: true }, expectedRevision: off.revision }, signal)
   assert.equal(await visible('google-ai-studio', 'gemini-4-argon'), true)
 })

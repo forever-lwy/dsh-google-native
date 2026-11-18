@@ -25,7 +25,7 @@ test('native file bridge keeps durable file references and core replay filtering
   const before = JSON.stringify(original)
   let restored
   const next = async function* () {
-    restored = restoreNativeFiles(projected)
+    restored = await restoreNativeFiles(projected, () => true)
     yield { type: 'finish', reason: { kind: 'stop' } }
   }
   for await (const _ of withNativeFileContext(original, next)) { /* consume scope */ }
@@ -33,7 +33,7 @@ test('native file bridge keeps durable file references and core replay filtering
   assert.equal(restored.messages[0].content[1], original.messages[0].content[0])
   assert.equal(projected.messages[0].content[0].type, 'text')
   assert.equal(JSON.stringify(original), before)
-  assert.equal(restoreNativeFiles(projected), projected)
+  assert.equal(await restoreNativeFiles(projected, () => true), projected)
 })
 
 test('native file bridge follows stable message IDs after core removes developer updates', async () => {
@@ -42,7 +42,7 @@ test('native file bridge follows stable message IDs after core removes developer
   const projected = { ...original, messages: [{ ...original.messages[1], content: [{ type: 'text', text: 'handle' }] }] }
   let restored
   for await (const _ of withNativeFileContext(original, async function* () {
-    restored = restoreNativeFiles(projected)
+    restored = await restoreNativeFiles(projected, () => true)
     yield { type: 'finish', reason: { kind: 'stop' } }
   })) { /* consume scope */ }
   assert.equal(restored.messages.length, 1)
@@ -60,7 +60,7 @@ test('native inputs retain exact mapped and unmapped core hints in multi-file or
   const before = JSON.stringify([original, projected])
   let restored
   for await (const _ of withNativeFileContext(original, async function* () {
-    restored = restoreNativeFiles(projected)
+    restored = await restoreNativeFiles(projected, () => true)
     yield { type: 'finish', reason: { kind: 'stop' } }
   })) { /* consume */ }
   assert.deepEqual(restored.messages[0].content.map(block => block.type), ['text', 'text', 'file', 'text', 'text', 'file', 'text'])
@@ -86,7 +86,7 @@ test('a request that already contains native files retains one copy without manu
   const original = request('already-native.pdf')
   let restored
   for await (const _ of withNativeFileContext(original, async function* () {
-    restored = restoreNativeFiles(original)
+    restored = await restoreNativeFiles(original, () => true)
     yield { type: 'finish', reason: { kind: 'stop' } }
   })) { /* consume */ }
   assert.equal(restored, original)
@@ -104,10 +104,10 @@ test('concurrent native file contexts never exchange attachments and cleanup run
   const iter = r => withNativeFileContext(r, async function* () {
     await wait
     try {
-      seen.push(restoreNativeFiles(projected(r)).messages[0].content[1].attachment.name)
+      seen.push((await restoreNativeFiles(projected(r), () => true)).messages[0].content[1].attachment.name)
       yield { type: 'finish', reason: { kind: 'stop' } }
     } finally {
-      seen.push(`cleanup:${restoreNativeFiles(projected(r)).messages[0].content[1].attachment.name}`)
+      seen.push(`cleanup:${(await restoreNativeFiles(projected(r), () => true)).messages[0].content[1].attachment.name}`)
     }
   })[Symbol.asyncIterator]()
   const one = iter(first)
@@ -124,7 +124,7 @@ test('bridge refuses a changed block shape rather than assigning the wrong attac
   const projected = { ...original, messages: [{ ...original.messages[0], content: [] }] }
   const consume = async () => {
     for await (const _ of withNativeFileContext(original, async function* () {
-      restoreNativeFiles(projected)
+      await restoreNativeFiles(projected, () => true)
       yield { type: 'finish', reason: { kind: 'stop' } }
     })) { /* consume scope */ }
   }
@@ -137,7 +137,7 @@ test('nested requests without files shadow outer native file references even whe
   let restored
   for await (const _ of withNativeFileContext(outer, async function* () {
     yield* withNativeFileContext(inner, async function* () {
-      restored = restoreNativeFiles(inner)
+      restored = await restoreNativeFiles(inner, () => true)
       yield { type: 'finish', reason: { kind: 'stop' } }
     })
   })) { /* consume scopes */ }
@@ -205,7 +205,7 @@ test('actual rc.5 LlmRuntime sends verified attachment bytes through the native 
     provider: 'google-ai-studio', model: 'gemini-2.5-flash', messages: [fixture.user],
   }))
   assert.equal(chunks.at(-1).reason.kind, 'stop', JSON.stringify(chunks.at(-1)))
-  assert.equal(fixture.reads(), 1)
+  assert.equal(fixture.reads(), 2, 'one type check and one native payload')
   assert.match(fixture.calls[0].contents[0].parts[1].text, /cannot access a readable path/)
   assert.deepEqual(fixture.calls[0].contents[0].parts[2], {
     inlineData: { mimeType: 'application/pdf', data: fixture.bytes.toString('base64') },

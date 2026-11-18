@@ -8,7 +8,7 @@ import { normalizeNativeEndpoint } from './client-factory.js'
 
 export const GOOGLE_PROVIDERS = ['google-ai-studio', 'google-vertex-native'] as const
 export type GoogleProvider = typeof GOOGLE_PROVIDERS[number]
-export type GoogleInputType = 'text' | 'image' | 'audio' | 'video' | 'pdf'
+export type GoogleInputType = 'text' | 'image' | 'audio' | 'video' | 'pdf' | 'office'
 export type GoogleOutputType = 'text' | 'image' | 'audio'
 
 export interface GoogleReasoningConfig {
@@ -87,7 +87,7 @@ const model = z.object({
   id: z.string().required(), name: z.string(), contextWindow: z.number().min(1), maxTokens: z.number().min(1),
   // Schemastery arrays otherwise materialize absent fields as [], which would
   // turn legacy models into an explicit invalid empty input declaration.
-  inputTypes: z.array(z.union(['text', 'image', 'audio', 'video', 'pdf'])).extra('default', undefined).description('此模型原生接受的输入类型，必须包含 text'),
+  inputTypes: z.array(z.union(['text', 'image', 'audio', 'video', 'pdf', 'office'])).extra('default', undefined).description('此模型原生接受的输入类型，必须包含 text'),
   outputTypes: z.array(z.union(['text', 'image', 'audio'])).extra('default', undefined).description('此模型支持的原生输出类型，不指定请求输出格式'),
   reasoning: z.array(reasoning), defaultReasoning: z.string(),
   generationConfig: z.dict(z.any()).description('Google GenerateContentConfig 原生 JSON 参数'),
@@ -187,7 +187,7 @@ export function validateProfile(provider: GoogleProvider, input: VolatileSnapsho
       throw new LlmError('最大生成 tokens 必须小于模型上下文长度', 'INVALID_CONFIG')
     }
     if (entry.inputTypes !== undefined && (!Array.isArray(entry.inputTypes) || !entry.inputTypes.includes('text')
-      || entry.inputTypes.some(type => !['text', 'image', 'audio', 'video', 'pdf'].includes(type))
+      || entry.inputTypes.some(type => !['text', 'image', 'audio', 'video', 'pdf', 'office'].includes(type))
       || new Set(entry.inputTypes).size !== entry.inputTypes.length)) {
       throw new LlmError('模型输入类型必须包含 text，且仅包含不重复的受支持类型', 'INVALID_CONFIG')
     }

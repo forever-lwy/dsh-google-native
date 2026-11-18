@@ -16,7 +16,7 @@ function fixture(provider = 'google-ai-studio', nested = false) {
   const rootCallId = nested ? 'root' : callId
   const receipt = { version: 1, sessionId: 'same-session', provider, model, callId, rootCallId, attachment: { ...attachment } }
   const prompt = { id: 'prompt', role: 'user', source: { kind: 'user', googleNative: { version: 1, selections: [{ provider, model,
-    choices: { nativeFiles: false, search: false, urlContext: false, codeExecution: false, maps: false } }] } }, content: [{ type: 'text', text: 'Read the workspace file.' }] }
+    choices: { nativeFiles: true, search: false, urlContext: false, codeExecution: false, maps: false } }] } }, content: [{ type: 'text', text: 'Read the workspace file.' }] }
   const assistant = { id: 'assistant', role: 'assistant', source: { kind: 'model', provider, model }, content: [{
     type: 'tool-call', id: rootCallId, name: nested ? 'run_code' : 'google_native_attach_file', arguments: '{"path":"original.pdf"}',
   }] }
@@ -39,14 +39,14 @@ async function translated(f, events = f.events) {
   let result
   const authorized = verifiedNativeFileMessages(f.options, events)
   for await (const _ of withNativeFileContext(f.options, async function* () {
-    result = await translateMessages(restoreNativeFiles(projected), files)
+    result = await translateMessages(await restoreNativeFiles(projected, () => true), files)
     yield { type: 'finish', reason: { kind: 'stop' } }
   }, authorized)) { /* consume */ }
   return { result, reads }
 }
 
 for (const provider of ['google-ai-studio', 'google-vertex-native']) {
-  test(`verified ${provider} direct tool files bypass the user-upload toggle and use ordinary native media`, async () => {
+  test(`verified ${provider} direct tool files keep their receipt binding and use ordinary native media`, async () => {
     const f = fixture(provider)
     f.tool.content.unshift({ type: 'text', text: 'Keep this policy feedback alongside the native attachment.' })
     const original = JSON.stringify(f.options)
@@ -141,7 +141,7 @@ test('the projection boundary cannot reattribute an approved file to another too
     const authorized = verifiedNativeFileMessages(f.options, f.events)
     const consume = async () => {
       for await (const _ of withNativeFileContext(f.options, async function* () {
-        restoreNativeFiles(projected)
+        await restoreNativeFiles(projected, () => true)
         yield { type: 'finish', reason: { kind: 'stop' } }
       }, authorized)) { /* consume */ }
     }

@@ -5,8 +5,9 @@ function recordedChoices(source: unknown, provider: string, model: string): Goog
   if (typeof source !== 'object' || source === null || !('googleNative' in source)) return undefined
   const parsed = chatSourceSchema.safeParse(source.googleNative)
   if (!parsed.success) throw LlmError.fromFailure({ message: '已记录的 Google 原生选项无效，无法安全构建请求。', code: 'INVALID_NATIVE_OPTIONS' })
-  return parsed.data.selections.find(item => item.provider === provider && item.model === model)?.choices
+  const choices = parsed.data.selections.find(item => item.provider === provider && item.model === model)?.choices
     ?? { nativeFiles: false, search: false, urlContext: false, codeExecution: false, maps: false }
+  return { ...choices, nativeFiles: parsed.data.nativeFiles ?? choices.nativeFiles }
 }
 
 /** The newest human prompt owns this turn; never carry an older prompt's switches forward. */
@@ -25,6 +26,9 @@ export function latestChatChoices(options: GenerateOptions): GoogleChatChoices |
 export function usesNativeFiles(message: RequestMessage, options: GenerateOptions): boolean {
   // Generated media must keep its original native replay even if new uploads use local tools.
   if (message.role === 'assistant') return true
+  // A file can predate this plugin's installation in the session.
+  const peer = message.source && 'claudeNative' in message.source ? message.source.claudeNative : undefined
+  if (peer && typeof peer === 'object' && 'nativeFiles' in peer && peer.nativeFiles === false) return false
   return recordedChoices(message.source, options.provider, options.model)?.nativeFiles
     ?? latestChatChoices(options)?.nativeFiles ?? true
 }

@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, freezeMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId, SessionStore, SessionSeq, buildForkSeed } from '@deepseek-ai/dsh-session'
+import { appendPluginRecord, Session, SessionId, SessionStore, SessionSeq, buildForkSeed } from '@deepseek-ai/dsh-session'
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
 import { remoteMethods } from '@deepseek-ai/dsh-typert-protocol'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
@@ -57,6 +57,30 @@ test('per-session options save complete durable preferences and await the normal
   assert.equal(one.session.snapshotEvents().at(-1).type, 'plugin:dsh-google-native/chat-controls')
   const two = await fixture()
   assert.equal((await two.controls.get(two.request, signal())).choices.search, false)
+})
+
+test('the shared file preference migrates the last legacy save, survives a cold read, and leaves other sessions independent', async () => {
+  const f = await fixture()
+  const next = { ...f.request, provider: 'google-vertex-native', model: 'gemini-2.5-pro' }
+  const peer = { provider: 'claude-native', model: 'claude-opus-5-5', choices: { nativeFiles: false, webSearch: true, webFetch: false } }
+  const record = 'plugin:dsh-claude-native/chat-controls'
+  appendPluginRecord(f.session, record, { revision: 3, selections: [peer] })
+  const off = await f.controls.get(next, signal())
+  assert.equal(off.choices.nativeFiles, false)
+  assert.equal(off.revision, 1)
+  const here = await f.controls.get(f.request, signal())
+  assert.equal(here.choices.nativeFiles, false)
+  const on = await f.controls.set({ ...f.request, choices: { ...here.choices, nativeFiles: true }, expectedRevision: here.revision }, signal())
+  assert.equal(on.choices.nativeFiles, true)
+  assert.equal((await f.controls.get(next, signal())).choices.nativeFiles, true)
+  appendPluginRecord(f.session, record, { revision: 4, nativeFiles: false, selections: [peer] })
+  await assert.rejects(f.controls.set({ ...f.request, choices: on.choices, expectedRevision: on.revision }, signal()),
+    err => err.code === 'native-google/conflict')
+  const saved = JSON.parse(JSON.stringify(f.session.snapshotEvents()))
+  f.ctx.sessionPersistence.open = async () => ({ read: async () => ({ events: saved }), close: async () => {} })
+  assert.deepEqual(await f.controls.get({ ...next, sessionId: 'cold' }, signal()), await f.controls.get(next, signal()))
+  const unrelated = await fixture()
+  assert.equal((await unrelated.controls.get(unrelated.request, signal())).choices.nativeFiles, true)
 })
 
 test('enqueue captures immutable exact choices while retaining RPC identity, caller and timezone', async () => {
