@@ -40,7 +40,7 @@ export interface ModelSettingsDraft {
 }
 type Translate = PropsLocale<'googleProviderSettings'>['t']
 
-const inputTypes: InputType[] = ['text', 'image', 'audio', 'video', 'pdf']
+const inputTypes: InputType[] = ['text', 'image', 'audio', 'video', 'pdf', 'office']
 const supportedOutputTypes: SupportedOutputType[] = ['text', 'image', 'audio']
 const outputTypes: OutputType[] = ['TEXT', 'IMAGE', 'AUDIO']
 const numberText = (value: number | null | undefined) => value == null ? '' : String(value)
@@ -65,7 +65,7 @@ export function initialModelSettings(model: GoogleProviderModel): ModelSettingsD
     contextWindow: numberText(advanced.contextWindow === undefined ? model.contextWindow : advanced.contextWindow),
     maxTokens: numberText(advanced.maxTokens === undefined ? model.maxTokens : advanced.maxTokens),
     inputMode: declaredInputs == null ? 'inherit' : 'custom',
-    inputTypes: [...(declaredInputs ?? inputTypes)],
+    inputTypes: [...(declaredInputs ?? inputTypes.filter(type => type !== 'office'))],
     supportedOutputMode: declaredOutputs == null ? 'inherit' : 'custom',
     outputTypes: [...(declaredOutputs ?? ['text'])],
     outputMode: advanced.responseModalities == null ? 'inherit' : 'custom',
@@ -222,7 +222,7 @@ export function ModelSettings({ model, draft, disabled, t, onChange }: {
       {draft.inputMode === 'custom' && <div className="dsh-google-provider-model-types">{inputTypes.map(type => <label key={type}>
         <input type="checkbox" checked={draft.inputTypes.includes(type)} disabled={disabled || type === 'text'} data-google-model-input={type}
           onChange={event => patch({ inputTypes: event.currentTarget.checked ? [...draft.inputTypes, type] : draft.inputTypes.filter(item => item !== type) })}/>
-        <span>{t(type === 'text' ? 'typeText' : type === 'image' ? 'typeImage' : type === 'audio' ? 'typeAudio' : type === 'video' ? 'typeVideo' : 'typePdf')}</span>
+        <span>{t(({ text: 'typeText', image: 'typeImage', audio: 'typeAudio', video: 'typeVideo', pdf: 'typePdf', office: 'typeOffice' } as const)[type])}</span>
       </label>)}</div>}
     </fieldset>
     <fieldset><legend>{t('supportedOutputTypes')}</legend>

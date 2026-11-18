@@ -6,9 +6,9 @@ import type {} from '@deepseek-ai/dsh-working-directory'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { createUserMessage, LlmError, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import { defineTool, type ToolExecutionToken } from '@deepseek-ai/dsh-tools'
-import { resolveCapabilities } from './capabilities.js'
-import { assertNativeInputType, detectMimeType } from './files.js'
-import { GOOGLE_PROVIDERS, type GoogleInputType, type Profiles } from './config.js'
+import { acceptsOffice, resolveCapabilities } from './capabilities.js'
+import { nativeMimeType, supportsFileMime } from './files.js'
+import { GOOGLE_PROVIDERS, type Profiles } from './config.js'
 import type { GoogleChatChoices } from './chat-remote.js'
 
 export const GOOGLE_NATIVE_FILE_TOOL = 'google_native_attach_file'
@@ -55,31 +55,24 @@ export type NativeFileChoices = (session: Session, provider: string, model: stri
 /** Attach exact workspace bytes to the current conversation. No parser, image
  * normalizer, external model request, or credential resolver participates. */
 export function registerNativeFileTool(ctx: Context, profiles: () => Profiles, choices?: NativeFileChoices): void {
-  // The tool exists only while the step runs on an enabled Google model. A
-  // model with native file input also needs the conversation's native-file
-  // switch on; without chat controls there is no switch and the capability
-  // decides. A model that only declares image input has no such switch and
-  // keeps the tool for images.
   const eligible = (agent: Agent | undefined, provider: string | undefined, modelId: string | undefined) => {
     if (!agent || !provider || !modelId || !GOOGLE_PROVIDERS.some(value => value === provider)) return undefined
     const profile = profiles()[provider as keyof Profiles]
     const model = profile.enabled ? profile.models.find(model => model.id === modelId) : undefined
-    if (!model) return undefined
-    const nativeFiles = resolveCapabilities(provider, model).nativeFiles
-    if (!nativeFiles) return model.inputTypes?.includes('image') ? { profile, model, nativeFiles } : undefined
+    if (!model || !resolveCapabilities(provider, model).nativeFiles) return undefined
     const current = choices?.(agent.session, provider, modelId)
-    return current === undefined || current.nativeFiles ? { profile, model, nativeFiles } : undefined
+    return current === undefined || current.nativeFiles ? { profile, model } : undefined
   }
   const routeOf = (agent: Agent) => agent.session.requestHeader()?.config ?? agent.options
   const pending = new Map<ToolExecutionToken, { agent: Agent; receipts: NativeFileToolReceipt[] }>()
   ctx.effect(() => () => { pending.clear() })
   const definition = defineTool({
     name: GOOGLE_NATIVE_FILE_TOOL,
-    description: 'Attach one existing workspace file to this SAME conversation so the current Google model can inspect its ORIGINAL bytes natively. Supports declared images, audio, video, PDF and text formats. This tool does not parse, summarize, OCR, resize, transcode or call another model. Use a workspace path; after success inspect the attached file in the next model response. Large files obey the configured native upload limits.',
+    description: 'Attach an existing workspace file to this conversation for native reading. The current Google model and connection determine support for images, audio, video, PDF, text and Office documents. Inspect the attached media after success. If the tool returns a local path, use the built-in file tools to read it. Native uploads use the configured size limits.',
     parameters: { path: { type: 'string', required: true, description: 'Existing file path, absolute or relative to the current working directory, inside the session workspace.' } },
-    output: { schema: receiptSchema,
-      render: (_args, value) => [{ type: 'file', attachment: value.attachment as FileAttachmentRef }],
-      presentationMeta: (_args, value) => ({ googleNativeFile: value }),
+    output: { schema: { oneOf: [receiptSchema, { type: 'string' }] },
+      render: (_args, value) => typeof value === 'string' ? [{ type: 'text', text: value }] : [{ type: 'file', attachment: value.attachment as FileAttachmentRef }],
+      presentationMeta: (_args, value) => typeof value === 'string' ? null : { googleNativeFile: value },
     },
     async execute({ path }, exec) {
       const agent = exec.agent
@@ -100,14 +93,14 @@ export function registerNativeFileTool(ctx: Context, profiles: () => Profiles, c
       const maxFile = positive(selected.profile.files.maxFileBytes, 300 * MiB)
       const maxBytes = selected.profile.provider === 'google-vertex-native'
         ? Math.min(maxFile, positive(selected.profile.files.inlineMaxBytes, 16 * MiB)) : maxFile
-      if (before.size !== undefined && before.size > maxBytes) throw LlmError.fromFailure({ message: '文件超过当前 Google 原生上传大小上限。', code: 'FILE_TOO_LARGE' })
       const name = target.displayPath.replaceAll('\\', '/').split('/').at(-1) || 'attachment'
-      const prefix = await ctx.fs.readByteRange(target, { offset: 0, length: Math.min(32, maxBytes + 1) }, exec.signal)
-      const mime = detectMimeType(name, prefix)
-      const inputType: GoogleInputType = mime.startsWith('image/') ? 'image' : mime.startsWith('audio/') ? 'audio'
-        : mime.startsWith('video/') ? 'video' : mime === 'application/pdf' ? 'pdf' : 'text'
-      if (inputType !== 'image' && !selected.nativeFiles) throw LlmError.fromFailure({ message: '当前模型未启用此类原生文件输入。', code: 'UNSUPPORTED_NATIVE_CAPABILITY' })
-      assertNativeInputType(inputType, selected.model.inputTypes)
+      const prefix = await ctx.fs.readByteRange(target, { offset: 0, length: 32 }, exec.signal)
+      exec.signal.throwIfAborted()
+      const mime = nativeMimeType(name, prefix)
+      if (!supportsFileMime(mime, selected.model.inputTypes, acceptsOffice(selected.profile, selected.model))) {
+        return `Use the built-in file tools to read the existing workspace file at ${JSON.stringify(target.displayPath)}.`
+      }
+      if (before.size !== undefined && before.size > maxBytes) throw LlmError.fromFailure({ message: '文件超过当前 Google 原生上传大小上限。', code: 'FILE_TOO_LARGE' })
       const data = async function* () {
         let offset = prefix.length
         if (offset > maxBytes) throw LlmError.fromFailure({ message: '文件超过当前 Google 原生上传大小上限。', code: 'FILE_TOO_LARGE' })

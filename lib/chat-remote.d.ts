@@ -57,6 +57,7 @@ export declare const chatSourceSchema: z.ZodObject<{
             maps: z.ZodBoolean;
         }, z.core.$strict>;
     }, z.core.$strict>>;
+    nativeFiles: z.ZodOptional<z.ZodBoolean>;
 }, z.core.$strict>;
 export type GoogleChatSourceSnapshot = z.infer<typeof chatSourceSchema>;
 export declare const chatCapabilitiesSchema: z.ZodObject<{

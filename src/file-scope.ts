@@ -1,9 +1,9 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { Context } from '@deepseek-ai/cordis'
 import { LlmError } from '@deepseek-ai/dsh-llm'
-import type { GenerateOptions, RequestMessage, StreamChunk } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, FileBlock, GenerateOptions, RequestMessage, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { GOOGLE_PROVIDERS } from './config.js'
-import { usesNativeFiles } from './request-controls.js'
+import { latestChatChoices, usesNativeFiles } from './request-controls.js'
 import type {} from '@deepseek-ai/dsh-session-query'
 import { explicitNativeFileMessages, verifiedNativeFileMessages } from './native-file-provenance.js'
 
@@ -58,7 +58,11 @@ export async function* withNativeFileContext(
 
 /** Keep core's local read-only handles alongside native input bytes. Assistant
  * media retains its original block shape for exact provider replay. */
-export function restoreNativeFiles(options: GenerateOptions): GenerateOptions {
+export async function restoreNativeFiles(
+  options: GenerateOptions,
+  canSend: (block: FileBlock, source: RequestMessage, index: number, enabled: boolean) => boolean | Promise<boolean>,
+  sessionEnabled?: boolean,
+): Promise<GenerateOptions> {
   const context = nativeFiles.getStore()
   const original = context?.options
   if (original === undefined || original.provider !== options.provider || original.model !== options.model || original.sessionId !== options.sessionId) return options
@@ -66,35 +70,38 @@ export function restoreNativeFiles(options: GenerateOptions): GenerateOptions {
   const anonymous = original.messages.filter(message => message.id === undefined)
   let anonymousIndex = 0
   let changed = false
-  const messages = options.messages.map((projected): RequestMessage => {
+  const enabled = sessionEnabled !== false && latestChatChoices(original)?.nativeFiles !== false
+  const messages: RequestMessage[] = []
+  for (const projected of options.messages) {
+    messages.push(projected)
     const source = projected.id === undefined ? anonymous[anonymousIndex++] : byId.get(projected.id)
-    if (source === undefined || !source.content.some(block => block.type === 'file')) return projected
+    if (source === undefined || !source.content.some(block => block.type === 'file')) continue
     const explicit = source.id !== undefined && context!.explicit.has(source.id)
-    if (explicit ? !context!.authorized.has(source.id!) : !usesNativeFiles(source, original)) return projected
+    if (source.role !== 'assistant' && !enabled) continue
+    if (explicit ? !context!.authorized.has(source.id!) : !usesNativeFiles(source, original)) continue
     const changedCall = explicit && source.role === 'tool' && projected.role === 'tool'
       && (projected.toolCallId !== source.toolCallId || projected.source.callId !== source.source.callId)
     if (projected.role !== source.role || projected.content.length !== source.content.length || changedCall) {
       throw LlmError.fromFailure({ message: 'dsh 文件投影与原消息不匹配；无法安全发送 Google 原生附件', code: 'NATIVE_FILE_BRIDGE_MISMATCH' })
     }
+    const content: ContentBlock[] = []
     let messageChanged = false
-    const content = projected.content.flatMap((block, index) => {
+    for (const [index, block] of projected.content.entries()) {
+      content.push(block)
       const originalBlock = source.content[index]
-      if (originalBlock.type !== 'file' || block.type === 'file') return [block]
+      if (originalBlock.type !== 'file' || block.type !== 'text' || !await canSend(originalBlock, source, index, enabled)) continue
       messageChanged = true
-      if (source.role === 'assistant') return [originalBlock]
-      const localHint = block.type === 'text' ? {
+      if (source.role === 'assistant') content.pop()
+      else content[content.length - 1] = {
         ...block,
         text: `${block.text}\nAvailable file contents are attached natively below. The local-path note above concerns local file tools only.`,
-      } : block
-      return [localHint, originalBlock]
-    })
-    if (!messageChanged) return projected
+      }
+      content.push(originalBlock)
+    }
+    if (!messageChanged) continue
     changed = true
-    return {
-      ...projected,
-      content,
-    } as RequestMessage
-  })
+    messages[messages.length - 1] = { ...projected, content } as RequestMessage
+  }
   return changed ? { ...options, messages } : options
 }
 

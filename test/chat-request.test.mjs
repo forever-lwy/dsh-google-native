@@ -5,7 +5,7 @@ import { chmod, copyFile, link, mkdtemp, readFile, rm, stat, writeFile } from 'n
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
-import { LlmRuntime, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { LlmRuntime, createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { GoogleNativeAdapter } from '../lib/adapter.js'
 import { defaultProfile } from '../lib/config.js'
 import { registerNativeFileBridge } from '../lib/file-scope.js'
@@ -22,14 +22,18 @@ const user = (selected, file = true, route = provider) => createUserMessage({ so
   { type: 'text', text: 'Read the document' },
   ...(file ? [{ type: 'file', attachment: { attachmentId: 'a'.repeat(64), name: 'input.pdf', bytes: pdf.length } }] : []),
 ] })
-function fixture() {
+function fixture({ data, sessionNativeFiles } = {}) {
   const ctx = new Context()
   new LlmRuntime(ctx)
   let reads = 0
   const requests = []
-  ctx.provide('attachments', { fileHostPath: () => undefined, async *readFileStream() { reads++; yield pdf } })
+  ctx.provide('attachments', { fileHostPath: ref => data && `/host/${ref.name}`, async *readFileStream(ref) {
+    reads++
+    yield data ? data[ref.name] : pdf
+  } })
+  ctx.provide('fs', { processPathFromHostPath: path => path.replace('/host/', '/readonly/') })
   const profiles = { [provider]: defaultProfile(provider), 'google-vertex-native': defaultProfile('google-vertex-native') }
-  const adapter = new GoogleNativeAdapter(ctx, { profiles: () => profiles, resolveApiKey: async () => 'offline-key',
+  const adapter = new GoogleNativeAdapter(ctx, { profiles: () => profiles, sessionNativeFiles, resolveApiKey: async () => 'offline-key',
     createClient: () => ({ models: { async generateContentStream(request) {
       requests.push(request)
       return (async function* () { yield { candidates: [{ content: { parts: [{ text: 'OK' }] }, finishReason: 'STOP' }] } })()
@@ -45,7 +49,7 @@ test('native file checkbox changes actual rc.5 file dispatch between verified by
     const f = fixture()
     const chunks = await collect(f.ctx.llm.stream({ provider, model, messages: [user(choices({ nativeFiles: enabled }))] }))
     assert.equal(chunks.at(-1).reason.kind, 'stop')
-    assert.equal(f.reads(), enabled ? 1 : 0)
+    assert.equal(f.reads(), enabled ? 2 : 0)
     const parts = f.requests[0].contents[0].parts
     const native = parts.filter(part => part.inlineData)
     assert.deepEqual(native, enabled ? [{ inlineData: { mimeType: 'application/pdf', data: pdf.toString('base64') } }] : [])
@@ -86,7 +90,7 @@ for (const route of ['google-ai-studio', 'google-vertex-native']) for (const ena
     const chunks = await collect(ctx.llm.stream({ provider: route, model, messages: [message] }))
     assert.equal(chunks.at(-1).reason.kind, 'stop')
     assert.equal(requests.length, 1)
-    assert.equal(reads, enabled ? 1 : 0)
+    assert.equal(reads, enabled ? 2 : 0)
     const parts = requests[0].contents.flatMap(content => content.parts)
     const native = parts.filter(part => part.inlineData)
     assert.equal(native.length, enabled ? 1 : 0, 'the same occurrence uploads at most once')
@@ -121,14 +125,63 @@ for (const route of ['google-ai-studio', 'google-vertex-native']) for (const ena
   })
 }
 
-test('later native-file changes preserve each old upload mode while applying the new mode to new files', async () => {
+test('disabling native files also routes previously native uploads through core file handles', async () => {
   const f = fixture()
-  await collect(f.ctx.llm.stream({ provider, model, messages: [user(choices()), user(choices({ nativeFiles: false }))] }))
-  assert.equal(f.reads(), 1)
-  const parts = f.requests[0].contents[0].parts
-  assert.equal(parts.filter(part => part.inlineData).length, 1)
+  const earlier = user(choices())
+  const assistant = createAssistantMessage({ source: { provider: 'claude-native', model: 'prior' }, content: [earlier.content[1]] })
+  await collect(f.ctx.llm.stream({ provider, model, messages: [earlier, assistant, user(choices({ nativeFiles: false }))] }))
+  assert.equal(f.reads(), 0)
+  const parts = f.requests[0].contents.flatMap(message => message.parts)
+  assert.equal(parts.filter(part => part.inlineData).length, 0)
   assert.match(parts.at(-1).text, /input.pdf/)
 })
+
+test('a PDF submitted under Claude with uploads disabled stays local after installing Google Native', async () => {
+  const f = fixture()
+  const prior = createUserMessage({ source: { kind: 'user', claudeNative: { version: 1, selections: [], nativeFiles: false } },
+    content: user(choices()).content })
+  await collect(f.ctx.llm.stream({ provider, model, messages: [prior, user(choices(), false)] }))
+  assert.equal(f.reads(), 0)
+  assert.ok(f.requests[0].contents.flatMap(message => message.parts).some(part => part.text?.includes('input.pdf')))
+})
+
+for (const route of ['google-ai-studio', 'google-vertex-native']) {
+  test(`${route}: Word and PDF are routed independently through model switches and a retry of the same history`, async () => {
+    const data = { 'brief.DOCX': Buffer.from('504b03041400', 'hex'), 'old.doc': Buffer.from('d0cf11e0a1b11ae1', 'hex'),
+      'paper.pdf': pdf, 'archive.zip': Buffer.from('504b03041400', 'hex') }
+    let enabled = true
+    const f = fixture({ data, sessionNativeFiles: () => enabled })
+    const profile = f.profiles[route]
+    profile.vertexAuth = 'api-key'
+    profile.baseURL = 'https://offline.test/declared-office-relay'
+    const target = profile.models[1].id
+    profile.models[1].inputTypes = ['text', 'office', 'pdf']
+    const messages = [createUserMessage({ source: { kind: 'user' }, content: Object.entries(data).map(([name, bytes], i) => ({
+      type: 'file', attachment: { name, bytes: bytes.length, attachmentId: String(i).repeat(64) },
+    })) })]
+    const send = async (modelId, native) => {
+      const result = await collect(f.ctx.llm.stream({ provider: route, model: modelId, sessionId: 'old-session', messages }))
+      assert.equal(result.at(-1).reason.kind, 'stop', JSON.stringify(result.at(-1)))
+      const parts = f.requests.at(-1).contents.flatMap(item => item.parts)
+      assert.deepEqual(parts.filter(part => part.inlineData).map(part => part.inlineData.mimeType), native)
+      for (const name of Object.keys(data)) assert.equal(parts.filter(part => part.text?.includes('/readonly/' + name)).length, 1)
+      assert.equal(parts.filter(part => part.text?.includes(nativeClarification)).length, native.length)
+    }
+    await send(model, ['application/pdf'])
+    messages.push(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Follow up' }] }))
+    await send(model, ['application/pdf'])
+    enabled = false
+    const before = f.reads()
+    await send(target, [])
+    await send(target, [])
+    assert.equal(f.reads(), before)
+    enabled = true
+    await send(target, ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword', 'application/pdf'])
+    profile.models[1].inputTypes = ['text', 'image']
+    await send(target, [])
+    assert.equal(messages[0].content.length, 4)
+  })
+}
 
 test('explicitly disabled native tools override provider/model settings and raw REST tool overrides', async t => {
   const f = fixture()
@@ -181,6 +234,9 @@ test('new unstamped prompts and auxiliary calls do not inherit older tool select
   assert.equal(latestChatChoices({ provider, model, purpose: 'session-title', messages: [selected] }), undefined)
   assert.equal(latestChatChoices({ provider, model, messages: [selected, createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'new' }] })] }), undefined)
   assert.deepEqual(latestChatChoices({ provider, model: 'unrecorded-model', messages: [selected] }), choices({ nativeFiles: false }))
+  const current = createUserMessage({ source: { ...selected.source, googleNative: { ...selected.source.googleNative, nativeFiles: true } },
+    content: selected.content })
+  assert.deepEqual(latestChatChoices({ provider, model: 'newly-added-model', messages: [current] }), choices())
 })
 
 test('native server tool events show readable activity while retaining exact replay Parts', async () => {

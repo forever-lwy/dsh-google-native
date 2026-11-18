@@ -62,6 +62,7 @@ export declare const modelAdvancedSchema: z.ZodObject<{
         audio: "audio";
         video: "video";
         pdf: "pdf";
+        office: "office";
     }>>>>;
     outputTypes: z.ZodOptional<z.ZodNullable<z.ZodArray<z.ZodEnum<{
         text: "text";
@@ -101,6 +102,7 @@ export declare const providerModelSchema: z.ZodObject<{
         audio: "audio";
         video: "video";
         pdf: "pdf";
+        office: "office";
     }>>>;
     outputTypes: z.ZodOptional<z.ZodArray<z.ZodEnum<{
         text: "text";
@@ -118,6 +120,7 @@ export declare const providerModelSchema: z.ZodObject<{
             audio: "audio";
             video: "video";
             pdf: "pdf";
+            office: "office";
         }>>>>;
         outputTypes: z.ZodOptional<z.ZodNullable<z.ZodArray<z.ZodEnum<{
             text: "text";
@@ -187,6 +190,7 @@ export declare const providerProfileViewSchema: z.ZodObject<{
             audio: "audio";
             video: "video";
             pdf: "pdf";
+            office: "office";
         }>>>;
         outputTypes: z.ZodOptional<z.ZodArray<z.ZodEnum<{
             text: "text";
@@ -204,6 +208,7 @@ export declare const providerProfileViewSchema: z.ZodObject<{
                 audio: "audio";
                 video: "video";
                 pdf: "pdf";
+                office: "office";
             }>>>>;
             outputTypes: z.ZodOptional<z.ZodNullable<z.ZodArray<z.ZodEnum<{
                 text: "text";
@@ -278,6 +283,7 @@ export declare const providerSettingsSchema: z.ZodObject<{
                 audio: "audio";
                 video: "video";
                 pdf: "pdf";
+                office: "office";
             }>>>;
             outputTypes: z.ZodOptional<z.ZodArray<z.ZodEnum<{
                 text: "text";
@@ -295,6 +301,7 @@ export declare const providerSettingsSchema: z.ZodObject<{
                     audio: "audio";
                     video: "video";
                     pdf: "pdf";
+                    office: "office";
                 }>>>>;
                 outputTypes: z.ZodOptional<z.ZodNullable<z.ZodArray<z.ZodEnum<{
                     text: "text";
@@ -367,6 +374,7 @@ export declare const providerDiscoverySchema: z.ZodObject<{
             audio: "audio";
             video: "video";
             pdf: "pdf";
+            office: "office";
         }>>>;
         outputTypes: z.ZodOptional<z.ZodArray<z.ZodEnum<{
             text: "text";
@@ -384,6 +392,7 @@ export declare const providerDiscoverySchema: z.ZodObject<{
                 audio: "audio";
                 video: "video";
                 pdf: "pdf";
+                office: "office";
             }>>>>;
             outputTypes: z.ZodOptional<z.ZodNullable<z.ZodArray<z.ZodEnum<{
                 text: "text";
@@ -450,6 +459,7 @@ export declare const providerSaveRequestSchema: z.ZodObject<{
             audio: "audio";
             video: "video";
             pdf: "pdf";
+            office: "office";
         }>>>;
         outputTypes: z.ZodOptional<z.ZodArray<z.ZodEnum<{
             text: "text";
@@ -467,6 +477,7 @@ export declare const providerSaveRequestSchema: z.ZodObject<{
                 audio: "audio";
                 video: "video";
                 pdf: "pdf";
+                office: "office";
             }>>>>;
             outputTypes: z.ZodOptional<z.ZodNullable<z.ZodArray<z.ZodEnum<{
                 text: "text";

@@ -31,7 +31,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-const INPUT_TYPES: GoogleInputType[] = ['text', 'image', 'audio', 'video', 'pdf']
+const INPUT_TYPES: GoogleInputType[] = ['text', 'image', 'audio', 'video', 'pdf', 'office']
 const OUTPUT_TYPES: GoogleOutputType[] = ['text', 'image', 'audio']
 
 function reportedTypes<T extends string>(sources: Record<string, unknown>[], keys: string[], allowed: readonly T[]): T[] | undefined {

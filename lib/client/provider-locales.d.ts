@@ -72,6 +72,7 @@ export declare const providerEn: {
     readonly typeAudio: "Audio";
     readonly typeVideo: "Video";
     readonly typePdf: "PDF";
+    readonly typeOffice: "Office / OpenDocument";
     readonly outputTypes: "Requested native output types";
     readonly supportedOutputTypes: "Declared supported output types";
     readonly supportedOutputTypesHint: "Model capability declaration, filled from returned metadata when available. This does not request every supported output type at once; configure requested response types separately below.";

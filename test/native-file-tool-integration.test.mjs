@@ -192,12 +192,12 @@ async function fixture(t, { provider = providers[0], model = MODEL, mode = 'nati
   ctx.on('tools/result', (exec, result) => { executionResults.push({ exec, result }) })
   session.append('request/header', { header: { config: { provider, model } }, reason: 'initial' })
   const userFile = humanUpload ? await remember(Buffer.from('%PDF-1.7\nordinary human upload'), 'human-upload.pdf') : undefined
-  const human = createUserMessage({ source: { kind: 'user', googleNative: { version: 1, selections: [{ provider, model,
-    choices: { nativeFiles: false, search: false, urlContext: false, codeExecution: false, maps: false } }] } },
-    content: [{ type: 'text', text: 'Use the native attachment tool to inspect the workspace file.' },
-      ...(userFile ? [{ type: 'file', attachment: userFile }] : [])],
+  const human = (nativeFiles, content) => createUserMessage({
+    source: { kind: 'user', googleNative: { version: 1, selections: [{ provider, model,
+      choices: { nativeFiles, search: false, urlContext: false, codeExecution: false, maps: false } }] } }, content,
   })
-  session.append('user/message', human, { surfaceOp: 'append' })
+  if (userFile) session.append('user/message', human(false, [{ type: 'file', attachment: userFile }]), { surfaceOp: 'append' })
+  session.append('user/message', human(true, [{ type: 'text', text: 'Use the native attachment tool to inspect the workspace file.' }]), { surfaceOp: 'append' })
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     assert.match(String(url), /offline\.test/)
     assert.match(String(url), /:streamGenerateContent/)
@@ -306,7 +306,7 @@ for (const provider of providers) {
       assert.ok(assembled.tools.some(tool => tool.name === TOOL))
       const first = await f.generate()
       assert.equal(f.requests.length, 1)
-      assert.equal(inlineParts(f.requests[0].body).length, 0, 'the ordinary human upload switch remains disabled')
+      assert.equal(inlineParts(f.requests[0].body).length, 0, 'the earlier user upload stays local after enabling native files')
       await assertFileToolAccess(f, f.requests[0].body, f.userFile, f.stored.get(f.userFile.attachmentId))
       assert.equal(requestText(f.requests[0].body).includes(nativeClarification), false)
       const call = toolCall(first)
@@ -373,8 +373,8 @@ for (const provider of providers) {
     assert.equal(f.writes.length, 1)
   })
 
-  test(`${provider}: a configured image-only model can attach an original PNG with the non-image native-file capability disabled`, async t => {
-    const f = await fixture(t, { provider, path: 'screen.png', bytes: png, inputTypes: ['text', 'image'], nativeCapability: false })
+  test(`${provider}: an enabled model with image input can attach an original PNG`, async t => {
+    const f = await fixture(t, { provider, path: 'screen.png', bytes: png, inputTypes: ['text', 'image'], nativeCapability: true })
     assert.ok((await f.assembly()).tools.some(tool => tool.name === TOOL))
     const first = await f.generate()
     assert.equal((await f.execute(toolCall(first))).isError, false)
@@ -439,15 +439,16 @@ test('actual main plugin mounts the native tool through rc.5 injected services a
 })
 
 for (const mode of ['native', 'ptc']) {
-  test(`${mode}: unsupported file types are refused without parsing, model calls or durable file results`, async t => {
+  test(`${mode}: unsupported files return their workspace path without parsing or publishing a native file`, async t => {
     const f = await fixture(t, { mode, path: 'unknown.bin', bytes: Buffer.from([0, 255, 0, 255]) })
     await f.assembly()
     await f.bind()
     const call = { id: 'unsupported-file-call', name: mode === 'ptc' ? 'run_code' : TOOL,
       arguments: JSON.stringify(mode === 'ptc' ? { code: `return await tools.${TOOL}({path:"unknown.bin"});`, description: 'Attach a file' } : { path: 'unknown.bin' }) }
     const result = await f.execute(call)
-    assert.equal(result.isError, true)
-    assert.ok(f.rawReads.length > 0, 'the refusal follows real raw file inspection')
+    assert.equal(result.isError, false)
+    assert.match(JSON.stringify(result.content), /unknown\.bin/)
+    assert.ok(f.rawReads.length > 0, 'file routing checks the prefix')
     assert.equal(f.requests.length, 0)
     assert.equal(f.writes.length, 0)
     assert.equal(f.injections.length, 0)
@@ -471,13 +472,14 @@ for (const mode of ['native', 'ptc']) {
     assert.equal(f.requests.length, 0)
   })
 
-  test(`${mode}: a model input declaration refuses PDF before storage when only text and images are supported`, async t => {
+  test(`${mode}: a model with text and image input receives the PDF workspace path`, async t => {
     const f = await fixture(t, { mode, inputTypes: ['text', 'image'] })
     await f.assembly()
     await f.bind()
     const result = await f.execute({ id: 'unsupported-model-input-call', name: mode === 'ptc' ? 'run_code' : TOOL,
       arguments: JSON.stringify(mode === 'ptc' ? { code: `return await tools.${TOOL}({path:"report.pdf"});`, description: 'Attach a file' } : { path: 'report.pdf' }) })
-    assert.equal(result.isError, true)
+    assert.equal(result.isError, false)
+    assert.match(JSON.stringify(result.content), /report\.pdf/)
     assert.ok(f.rawReads.length > 0)
     assert.equal(f.writes.length, 0)
     assert.equal(f.injections.length, 0)
@@ -516,9 +518,9 @@ for (const failure of ['late-cancel', 'inner-block', 'inner-file-removal', 'oute
 }
 
 for (const provider of providers) {
-  test(provider + ': PTC self-attached PNG reaches the next same-model request and survives history replay with user uploads disabled', async t => {
+  test(provider + ': PTC self-attached PNG reaches the next same-model request and survives history replay with an earlier local-only upload', async t => {
     const f = await fixture(t, { provider, mode: 'ptc', path: 'screen.png', bytes: png,
-      inputTypes: ['text', 'image'], nativeCapability: false })
+      inputTypes: ['text', 'image'], nativeCapability: true })
     const first = await f.generate()
     assert.equal(inlineParts(f.requests[0].body).length, 0)
     const result = await f.execute(toolCall(first))

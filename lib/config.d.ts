@@ -5,7 +5,7 @@ import type { GenerateContentConfig } from '@google/genai';
 import type { GoogleModelCapabilities } from './capabilities.js';
 export declare const GOOGLE_PROVIDERS: readonly ["google-ai-studio", "google-vertex-native"];
 export type GoogleProvider = typeof GOOGLE_PROVIDERS[number];
-export type GoogleInputType = 'text' | 'image' | 'audio' | 'video' | 'pdf';
+export type GoogleInputType = 'text' | 'image' | 'audio' | 'video' | 'pdf' | 'office';
 export type GoogleOutputType = 'text' | 'image' | 'audio';
 export interface GoogleReasoningConfig {
     id: string;
@@ -86,7 +86,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             name?: string | null | undefined;
             contextWindow?: number | null | undefined;
             maxTokens?: number | null | undefined;
-            inputTypes?: ("text" | "image" | "audio" | "video" | "pdf")[] | null | undefined;
+            inputTypes?: ("text" | "image" | "audio" | "video" | "pdf" | "office")[] | null | undefined;
             outputTypes?: ("text" | "image" | "audio")[] | null | undefined;
             reasoning?: ({
                 id?: string | null | undefined;
@@ -110,7 +110,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             name: z<string, string, "plain">;
             contextWindow: z<number, number, "plain">;
             maxTokens: z<number, number, "plain">;
-            inputTypes: z<("text" | "image" | "audio" | "video" | "pdf")[], ("text" | "image" | "audio" | "video" | "pdf")[], "plain">;
+            inputTypes: z<("text" | "image" | "audio" | "video" | "pdf" | "office")[], ("text" | "image" | "audio" | "video" | "pdf" | "office")[], "plain">;
             outputTypes: z<("text" | "image" | "audio")[], ("text" | "image" | "audio")[], "plain">;
             reasoning: z<({
                 id?: string | null | undefined;
@@ -183,7 +183,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             name?: string | null | undefined;
             contextWindow?: number | null | undefined;
             maxTokens?: number | null | undefined;
-            inputTypes?: ("text" | "image" | "audio" | "video" | "pdf")[] | null | undefined;
+            inputTypes?: ("text" | "image" | "audio" | "video" | "pdf" | "office")[] | null | undefined;
             outputTypes?: ("text" | "image" | "audio")[] | null | undefined;
             reasoning?: ({
                 id?: string | null | undefined;
@@ -207,7 +207,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             name: z<string, string, "plain">;
             contextWindow: z<number, number, "plain">;
             maxTokens: z<number, number, "plain">;
-            inputTypes: z<("text" | "image" | "audio" | "video" | "pdf")[], ("text" | "image" | "audio" | "video" | "pdf")[], "plain">;
+            inputTypes: z<("text" | "image" | "audio" | "video" | "pdf" | "office")[], ("text" | "image" | "audio" | "video" | "pdf" | "office")[], "plain">;
             outputTypes: z<("text" | "image" | "audio")[], ("text" | "image" | "audio")[], "plain">;
             reasoning: z<({
                 id?: string | null | undefined;
@@ -281,7 +281,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             name?: string | null | undefined;
             contextWindow?: number | null | undefined;
             maxTokens?: number | null | undefined;
-            inputTypes?: ("text" | "image" | "audio" | "video" | "pdf")[] | null | undefined;
+            inputTypes?: ("text" | "image" | "audio" | "video" | "pdf" | "office")[] | null | undefined;
             outputTypes?: ("text" | "image" | "audio")[] | null | undefined;
             reasoning?: ({
                 id?: string | null | undefined;
@@ -305,7 +305,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             name: z<string, string, "plain">;
             contextWindow: z<number, number, "plain">;
             maxTokens: z<number, number, "plain">;
-            inputTypes: z<("text" | "image" | "audio" | "video" | "pdf")[], ("text" | "image" | "audio" | "video" | "pdf")[], "plain">;
+            inputTypes: z<("text" | "image" | "audio" | "video" | "pdf" | "office")[], ("text" | "image" | "audio" | "video" | "pdf" | "office")[], "plain">;
             outputTypes: z<("text" | "image" | "audio")[], ("text" | "image" | "audio")[], "plain">;
             reasoning: z<({
                 id?: string | null | undefined;
@@ -378,7 +378,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             name?: string | null | undefined;
             contextWindow?: number | null | undefined;
             maxTokens?: number | null | undefined;
-            inputTypes?: ("text" | "image" | "audio" | "video" | "pdf")[] | null | undefined;
+            inputTypes?: ("text" | "image" | "audio" | "video" | "pdf" | "office")[] | null | undefined;
             outputTypes?: ("text" | "image" | "audio")[] | null | undefined;
             reasoning?: ({
                 id?: string | null | undefined;
@@ -402,7 +402,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             name: z<string, string, "plain">;
             contextWindow: z<number, number, "plain">;
             maxTokens: z<number, number, "plain">;
-            inputTypes: z<("text" | "image" | "audio" | "video" | "pdf")[], ("text" | "image" | "audio" | "video" | "pdf")[], "plain">;
+            inputTypes: z<("text" | "image" | "audio" | "video" | "pdf" | "office")[], ("text" | "image" | "audio" | "video" | "pdf" | "office")[], "plain">;
             outputTypes: z<("text" | "image" | "audio")[], ("text" | "image" | "audio")[], "plain">;
             reasoning: z<({
                 id?: string | null | undefined;
@@ -477,7 +477,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             name?: string | null | undefined;
             contextWindow?: number | null | undefined;
             maxTokens?: number | null | undefined;
-            inputTypes?: ("text" | "image" | "audio" | "video" | "pdf")[] | null | undefined;
+            inputTypes?: ("text" | "image" | "audio" | "video" | "pdf" | "office")[] | null | undefined;
             outputTypes?: ("text" | "image" | "audio")[] | null | undefined;
             reasoning?: ({
                 id?: string | null | undefined;
@@ -501,7 +501,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             name: z<string, string, "plain">;
             contextWindow: z<number, number, "plain">;
             maxTokens: z<number, number, "plain">;
-            inputTypes: z<("text" | "image" | "audio" | "video" | "pdf")[], ("text" | "image" | "audio" | "video" | "pdf")[], "plain">;
+            inputTypes: z<("text" | "image" | "audio" | "video" | "pdf" | "office")[], ("text" | "image" | "audio" | "video" | "pdf" | "office")[], "plain">;
             outputTypes: z<("text" | "image" | "audio")[], ("text" | "image" | "audio")[], "plain">;
             reasoning: z<({
                 id?: string | null | undefined;
@@ -574,7 +574,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             name?: string | null | undefined;
             contextWindow?: number | null | undefined;
             maxTokens?: number | null | undefined;
-            inputTypes?: ("text" | "image" | "audio" | "video" | "pdf")[] | null | undefined;
+            inputTypes?: ("text" | "image" | "audio" | "video" | "pdf" | "office")[] | null | undefined;
             outputTypes?: ("text" | "image" | "audio")[] | null | undefined;
             reasoning?: ({
                 id?: string | null | undefined;
@@ -598,7 +598,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             name: z<string, string, "plain">;
             contextWindow: z<number, number, "plain">;
             maxTokens: z<number, number, "plain">;
-            inputTypes: z<("text" | "image" | "audio" | "video" | "pdf")[], ("text" | "image" | "audio" | "video" | "pdf")[], "plain">;
+            inputTypes: z<("text" | "image" | "audio" | "video" | "pdf" | "office")[], ("text" | "image" | "audio" | "video" | "pdf" | "office")[], "plain">;
             outputTypes: z<("text" | "image" | "audio")[], ("text" | "image" | "audio")[], "plain">;
             reasoning: z<({
                 id?: string | null | undefined;
@@ -672,7 +672,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             name?: string | null | undefined;
             contextWindow?: number | null | undefined;
             maxTokens?: number | null | undefined;
-            inputTypes?: ("text" | "image" | "audio" | "video" | "pdf")[] | null | undefined;
+            inputTypes?: ("text" | "image" | "audio" | "video" | "pdf" | "office")[] | null | undefined;
             outputTypes?: ("text" | "image" | "audio")[] | null | undefined;
             reasoning?: ({
                 id?: string | null | undefined;
@@ -696,7 +696,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             name: z<string, string, "plain">;
             contextWindow: z<number, number, "plain">;
             maxTokens: z<number, number, "plain">;
-            inputTypes: z<("text" | "image" | "audio" | "video" | "pdf")[], ("text" | "image" | "audio" | "video" | "pdf")[], "plain">;
+            inputTypes: z<("text" | "image" | "audio" | "video" | "pdf" | "office")[], ("text" | "image" | "audio" | "video" | "pdf" | "office")[], "plain">;
             outputTypes: z<("text" | "image" | "audio")[], ("text" | "image" | "audio")[], "plain">;
             reasoning: z<({
                 id?: string | null | undefined;
@@ -769,7 +769,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             name?: string | null | undefined;
             contextWindow?: number | null | undefined;
             maxTokens?: number | null | undefined;
-            inputTypes?: ("text" | "image" | "audio" | "video" | "pdf")[] | null | undefined;
+            inputTypes?: ("text" | "image" | "audio" | "video" | "pdf" | "office")[] | null | undefined;
             outputTypes?: ("text" | "image" | "audio")[] | null | undefined;
             reasoning?: ({
                 id?: string | null | undefined;
@@ -793,7 +793,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             name: z<string, string, "plain">;
             contextWindow: z<number, number, "plain">;
             maxTokens: z<number, number, "plain">;
-            inputTypes: z<("text" | "image" | "audio" | "video" | "pdf")[], ("text" | "image" | "audio" | "video" | "pdf")[], "plain">;
+            inputTypes: z<("text" | "image" | "audio" | "video" | "pdf" | "office")[], ("text" | "image" | "audio" | "video" | "pdf" | "office")[], "plain">;
             outputTypes: z<("text" | "image" | "audio")[], ("text" | "image" | "audio")[], "plain">;
             reasoning: z<({
                 id?: string | null | undefined;

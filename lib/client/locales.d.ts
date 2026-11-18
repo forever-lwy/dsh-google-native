@@ -1,9 +1,9 @@
 export declare const en: {
     readonly title: "Native capabilities";
     readonly dialogLabel: "Google native capabilities";
-    readonly scope: "Applies to this conversation and model";
-    readonly nativeFiles: "Use native input for new files";
-    readonly nativeFilesHint: "Send new PDF, audio and video attachments directly to the model. Turn off to use file paths and local tools. Earlier files keep their original mode.";
+    readonly scope: "Options for this conversation";
+    readonly nativeFiles: "Use native file input";
+    readonly nativeFilesHint: "Shared across models in this conversation. Supported files go directly to the model. Other files use local file tools. Turning this off also applies to files in the conversation history.";
     readonly search: "Google Search";
     readonly urlContext: "URL context";
     readonly codeExecution: "Code execution";

@@ -100,7 +100,7 @@ test('unsupported models, unsupported declared media and nonregular or oversized
   f.profiles['google-ai-studio'].files.maxFileBytes = 2
   const before = f.reads.length
   assert.equal((await f.call()).isError, true)
-  assert.equal(f.reads.length, before)
+  assert.equal(f.reads.length, before + 1, 'size validation follows the bounded type check')
   assert.equal(f.saved.length, 0)
 })
 
@@ -158,15 +158,15 @@ test('step admission follows the conversation switch on models that have one', a
   assert.equal(f.reads.length, 0)
   current = undefined
   assert.ok((await visible()).includes(GOOGLE_NATIVE_FILE_TOOL), 'without chat controls the model capability decides')
-  // An image-only model has no native-file switch, so the switch is not consulted for it.
+  // An image-only model shares the same session switch.
   current = { nativeFiles: false, search: false, urlContext: false, codeExecution: false, maps: false }
   let before = asked.length
   f.profiles['google-ai-studio'].models = [{ id: 'custom-image-only', inputTypes: ['text', 'image'] }, { id: 'custom-text-only', inputTypes: ['text'] }]
   f.agent.options = { provider: 'google-ai-studio', model: 'custom-image-only' }
-  assert.ok((await visible()).includes(GOOGLE_NATIVE_FILE_TOOL))
+  assert.ok(!(await visible()).includes(GOOGLE_NATIVE_FILE_TOOL))
   f.agent.options = { provider: 'google-ai-studio', model: 'custom-text-only' }
   assert.ok(!(await visible()).includes(GOOGLE_NATIVE_FILE_TOOL))
-  assert.equal(asked.length, before)
+  assert.equal(asked.length, before + 1)
   before = asked.length
   f.agent.options = { provider: 'other-provider', model: 'gemini-2.5-flash' }
   assert.ok(!(await visible()).includes(GOOGLE_NATIVE_FILE_TOOL))

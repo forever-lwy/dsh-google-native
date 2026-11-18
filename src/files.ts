@@ -19,36 +19,51 @@ export interface NativeFileOptions {
 }
 
 const MiB = 1024 * 1024
+const officeTypes: Record<string, string> = {
+  '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.dotx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
+  '.ppt': 'application/vnd.ms-powerpoint', '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.xls': 'application/vnd.ms-excel', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.odt': 'application/vnd.oasis.opendocument.text', '.odp': 'application/vnd.oasis.opendocument.presentation',
+  '.ods': 'application/vnd.oasis.opendocument.spreadsheet',
+}
 const extensionTypes: Record<string, string> = {
+  ...officeTypes,
   '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp', '.gif': 'image/gif', '.heic': 'image/heic', '.heif': 'image/heif',
+  '.webp': 'image/webp', '.heic': 'image/heic', '.heif': 'image/heif',
   '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.aiff': 'audio/aiff', '.aif': 'audio/aiff',
   '.aac': 'audio/aac', '.flac': 'audio/flac', '.ogg': 'audio/ogg', '.oga': 'audio/ogg',
-  '.opus': 'audio/ogg', '.m4a': 'audio/mp4',
+  '.opus': 'audio/opus', '.m4a': 'audio/mp4', '.weba': 'audio/webm', '.alaw': 'audio/alaw', '.mulaw': 'audio/mulaw',
   '.pcm': 'audio/pcm', '.l16': 'audio/L16',
   '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mpeg': 'video/mpeg', '.mpg': 'video/mpeg',
-  '.mov': 'video/quicktime', '.avi': 'video/x-msvideo', '.flv': 'video/x-flv',
-  '.wmv': 'video/x-ms-wmv', '.webm': 'video/webm', '.3gp': 'video/3gpp', '.3gpp': 'video/3gpp',
-  '.txt': 'text/plain', '.md': 'text/plain', '.csv': 'text/csv', '.html': 'text/html',
-  '.htm': 'text/html', '.xml': 'text/xml', '.json': 'application/json',
-  '.js': 'text/javascript', '.ts': 'text/plain', '.py': 'text/x-python', '.css': 'text/css',
+  '.mov': 'video/quicktime', '.avi': 'video/avi', '.flv': 'video/x-flv',
+  '.wmv': 'video/wmv', '.webm': 'video/webm', '.3gp': 'video/3gpp', '.3gpp': 'video/3gpp',
+  '.txt': 'text/plain', '.md': 'text/plain', '.csv': 'text/plain', '.html': 'text/plain',
+  '.htm': 'text/plain', '.xml': 'text/plain', '.json': 'text/plain',
+  '.js': 'text/plain', '.ts': 'text/plain', '.py': 'text/plain', '.css': 'text/plain',
   '.yaml': 'text/plain', '.yml': 'text/plain', '.log': 'text/plain',
 }
 
 /** File names are display metadata only. No input is interpreted as a local path. */
-export function detectMimeType(name: string, prefix: Uint8Array): string {
+export function nativeMimeType(name: string, prefix: Uint8Array): string | undefined {
   const head = Buffer.from(prefix)
   const extension = extname(name).toLowerCase()
   const named = extensionTypes[extension]
+  const zip = head.subarray(0, 4).equals(Buffer.from('504b0304', 'hex'))
+  const compound = head.subarray(0, 8).equals(Buffer.from('d0cf11e0a1b11ae1', 'hex'))
+  if (zip || compound || Object.hasOwn(officeTypes, extension)) {
+    const legacyOffice = ['.doc', '.ppt', '.xls'].includes(extension)
+    return (legacyOffice ? compound : zip) ? officeTypes[extension] : undefined
+  }
   if (head.subarray(0, 5).toString('ascii') === '%PDF-') return 'application/pdf'
   if (head.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return 'image/png'
   if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return 'image/jpeg'
-  if (/^GIF8[79]a/.test(head.subarray(0, 6).toString('ascii'))) return 'image/gif'
+  if (/^GIF8[79]a/.test(head.subarray(0, 6).toString('ascii'))) return undefined
   if (head.subarray(0, 4).toString('ascii') === 'RIFF') {
     const kind = head.subarray(8, 12).toString('ascii')
     if (kind === 'WAVE') return 'audio/wav'
     if (kind === 'WEBP') return 'image/webp'
-    if (kind === 'AVI ') return 'video/x-msvideo'
+    if (kind === 'AVI ') return 'video/avi'
   }
   if (head.subarray(0, 4).toString('ascii') === 'fLaC') return 'audio/flac'
   if (head.subarray(0, 4).toString('ascii') === 'OggS') return 'audio/ogg'
@@ -57,10 +72,19 @@ export function detectMimeType(name: string, prefix: Uint8Array): string {
     const brand = head.subarray(8, 12).toString('ascii')
     if (/^M4[AB]/.test(brand)) return 'audio/mp4'
     if (brand === 'qt  ') return 'video/quicktime'
-    if (/^(heic|heix|hevc|hevx|mif1|msf1)$/.test(brand)) return 'image/heic'
-    return named === 'audio/mp4' ? named : 'video/mp4'
+    if (/^(heic|heix|hevc|hevx)$/.test(brand)) return 'image/heic'
+    if (/^(mif1|msf1)$/.test(brand)) return 'image/heif'
+    if (/^3g[p2]/.test(brand)) return 'video/3gpp'
+    if (/^(isom|iso[2-9]|mp4[12]|M4V |avc1|dash)$/.test(brand)) return named === 'audio/mp4' ? named : 'video/mp4'
+    return undefined
   }
-  if (named) return named
+  if (named === 'application/pdf' || named?.startsWith('image/') || named === 'text/plain' && head.includes(0)) return undefined
+  return named
+}
+
+export function detectMimeType(name: string, prefix: Uint8Array): string {
+  const mime = nativeMimeType(name, prefix)
+  if (mime) return mime
   throw LlmError.fromFailure({ message: `Cannot determine a supported native MIME type for attachment ${JSON.stringify(name)}. Use a supported media/PDF/text filename or explicit native fileData with mimeType.`, code: 'UNSUPPORTED_FILE_TYPE' })
 }
 
@@ -77,13 +101,24 @@ export function assertNativeInputType(type: GoogleInputType, allowed: readonly G
   }
 }
 
-function assertMimeType(mimeType: string, allowed: readonly GoogleInputType[] | undefined): void {
-  if (allowed === undefined) return
+const nativeMimes = new Set([...Object.values(extensionTypes).map(mime => mime.toLowerCase()), 'audio/mp3', 'audio/m4a', 'video/mpg'])
+const officeMimes = new Set(Object.values(officeTypes))
+
+function inputTypeForMime(mimeType: string): GoogleInputType | undefined {
   const base = mimeType.split(';', 1)[0].trim().toLowerCase()
-  const type: GoogleInputType | undefined = base.startsWith('image/') ? 'image'
+  if (!nativeMimes.has(base)) return undefined
+  return base.startsWith('image/') ? 'image'
     : base.startsWith('audio/') ? 'audio' : base.startsWith('video/') ? 'video'
-      : base === 'application/pdf' ? 'pdf'
-        : base.startsWith('text/') || ['application/json', 'application/xml', 'application/javascript'].includes(base) ? 'text' : undefined
+      : base === 'application/pdf' ? 'pdf' : officeMimes.has(base) ? 'office' : 'text'
+}
+
+export function supportsFileMime(mime: string | undefined, allowed: readonly GoogleInputType[] | undefined, office: boolean): boolean {
+  const type = mime === undefined ? undefined : inputTypeForMime(mime)
+  return type !== undefined && (type !== 'office' || office) && (allowed === undefined || allowed.includes(type))
+}
+
+function assertMimeType(mimeType: string, allowed: readonly GoogleInputType[] | undefined): void {
+  const type = inputTypeForMime(mimeType)
   if (type === undefined) throw LlmError.fromFailure({ message: '文件 MIME 类型不属于支持的原生输入类型。', code: 'UNSUPPORTED_FILE_TYPE' })
   assertNativeInputType(type, allowed)
 }
@@ -102,12 +137,14 @@ function unavailableFile(ref: FileAttachmentRef): Part {
 export class NativeFileStore {
   private readonly options: Required<NativeFileOptions>
   private readonly uploaded = new Map<string, { part: Part; expires: number }>()
+  private readonly inspected = new Map<string, string | undefined>()
 
   constructor(
     private readonly client: GoogleGenAI,
     private readonly backend: 'ai-studio' | 'vertex',
     private readonly attachments: AttachmentStore,
     options: NativeFileOptions = {},
+    private readonly executionPath?: (hostPath: string) => string | undefined,
   ) {
     this.options = {
       inlineThresholdBytes: positiveOption(options.inlineThresholdBytes, 8 * MiB, 'inlineThresholdBytes'),
@@ -121,33 +158,53 @@ export class NativeFileStore {
   async imagePart(ref: ImageAttachmentRef, signal?: AbortSignal, allowed?: readonly GoogleInputType[]): Promise<Part> {
     signal?.throwIfAborted()
     assertNativeInputType('image', allowed)
+    if (ref.mediaType === 'image/gif') {
+      const hostPath = this.attachments.imageHostPath(ref)
+      const path = hostPath && this.executionPath?.(hostPath)
+      return { text: path ? `Read the normalized GIF with local file tools at ${JSON.stringify(path)} (read-only).`
+        : `GIF ${JSON.stringify(ref.name ?? ref.attachmentId)} has no readable local path in this environment.` }
+    }
     const stored = await this.attachments.readImage(ref, signal)
     signal?.throwIfAborted()
     return { inlineData: { mimeType: stored.ref.mediaType, data: Buffer.from(stored.data).toString('base64') } }
   }
 
-  /** Inspect a bounded prefix of every input before any upload for this request starts. */
-  async validateInputType(ref: FileAttachmentRef, allowed: readonly GoogleInputType[], signal?: AbortSignal): Promise<void> {
+  /** Inspect only a prefix. The cache holds type metadata for immutable attachment references. */
+  private async inputMime(ref: FileAttachmentRef, signal?: AbortSignal): Promise<string | undefined> {
     signal?.throwIfAborted()
-    this.validateSize(ref)
-    const cached = this.uploaded.get(`${ref.attachmentId}:${extname(ref.name).toLowerCase()}`)
+    const key = `${ref.attachmentId}:${extname(ref.name).toLowerCase()}`
+    const cached = this.uploaded.get(key)
     if (cached && cached.expires > Date.now() + 60_000 && cached.part.fileData?.mimeType) {
-      assertMimeType(cached.part.fileData.mimeType, allowed)
-      return
+      return cached.part.fileData.mimeType
     }
+    if (this.inspected.has(key)) return this.inspected.get(key)
     let prefix = Buffer.alloc(0)
     try {
       for await (const chunk of this.attachments.readFileStream(ref, signal)) {
         signal?.throwIfAborted()
-        prefix = Buffer.concat([prefix, Buffer.from(chunk).subarray(0, 32 - prefix.byteLength)])
+        prefix = Buffer.concat([prefix, chunk.subarray(0, 32 - prefix.byteLength)])
         if (prefix.byteLength === 32) break
       }
     } catch (error) {
       signal?.throwIfAborted()
-      if (unavailableAttachment(error)) return
+      if (unavailableAttachment(error)) return extensionTypes[extname(ref.name).toLowerCase()]
       throw error
     }
-    assertMimeType(detectMimeType(ref.name, prefix), allowed)
+    const mime = nativeMimeType(ref.name, prefix)
+    if (this.inspected.size >= 256) this.inspected.delete(this.inspected.keys().next().value!)
+    this.inspected.set(key, mime)
+    return mime
+  }
+
+  async canSendFile(ref: FileAttachmentRef, allowed: readonly GoogleInputType[] | undefined, office: boolean, signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted()
+    if (!office && Object.hasOwn(officeTypes, extname(ref.name).toLowerCase())) return false
+    return supportsFileMime(await this.inputMime(ref, signal), allowed, office)
+  }
+
+  async validateInputType(ref: FileAttachmentRef, allowed: readonly GoogleInputType[], signal?: AbortSignal): Promise<void> {
+    this.validateSize(ref)
+    assertMimeType(await this.inputMime(ref, signal) ?? '', allowed)
   }
 
   private validateSize(ref: FileAttachmentRef): void {

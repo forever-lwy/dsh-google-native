@@ -3,6 +3,7 @@ import { LlmAdapter, type GenerateOptions, type LlmModelInfo, type LlmResolvedMo
 import { GoogleGenAI, type GenerateContentConfig, type GoogleGenAIOptions } from '@google/genai';
 import { type GoogleProfile, type GoogleModelConfig, type Profiles } from './config.js';
 export interface GoogleAdapterOptions {
+    sessionNativeFiles?: (id: NonNullable<GenerateOptions['sessionId']>) => boolean | undefined;
     profiles: () => Profiles;
     resolveApiKey: (profile: GoogleProfile) => Promise<string | undefined>;
     /** Dependency injection for offline protocol tests. */

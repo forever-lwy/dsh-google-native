@@ -11,19 +11,25 @@ export interface NativeFileOptions {
     processingTimeoutMs?: number;
 }
 /** File names are display metadata only. No input is interpreted as a local path. */
+export declare function nativeMimeType(name: string, prefix: Uint8Array): string | undefined;
 export declare function detectMimeType(name: string, prefix: Uint8Array): string;
 /** Model declarations constrain native inputs; they do not grant backend support. */
 export declare function assertNativeInputType(type: GoogleInputType, allowed: readonly GoogleInputType[] | undefined): void;
+export declare function supportsFileMime(mime: string | undefined, allowed: readonly GoogleInputType[] | undefined, office: boolean): boolean;
 /** Reads exclusively through the verified durable attachment store. */
 export declare class NativeFileStore {
     private readonly client;
     private readonly backend;
     private readonly attachments;
+    private readonly executionPath?;
     private readonly options;
     private readonly uploaded;
-    constructor(client: GoogleGenAI, backend: 'ai-studio' | 'vertex', attachments: AttachmentStore, options?: NativeFileOptions);
+    private readonly inspected;
+    constructor(client: GoogleGenAI, backend: 'ai-studio' | 'vertex', attachments: AttachmentStore, options?: NativeFileOptions, executionPath?: ((hostPath: string) => string | undefined) | undefined);
     imagePart(ref: ImageAttachmentRef, signal?: AbortSignal, allowed?: readonly GoogleInputType[]): Promise<Part>;
-    /** Inspect a bounded prefix of every input before any upload for this request starts. */
+    /** Inspect only a prefix. The cache holds type metadata for immutable attachment references. */
+    private inputMime;
+    canSendFile(ref: FileAttachmentRef, allowed: readonly GoogleInputType[] | undefined, office: boolean, signal?: AbortSignal): Promise<boolean>;
     validateInputType(ref: FileAttachmentRef, allowed: readonly GoogleInputType[], signal?: AbortSignal): Promise<void>;
     private validateSize;
     filePart(ref: FileAttachmentRef, signal?: AbortSignal, allowed?: readonly GoogleInputType[]): Promise<Part>;

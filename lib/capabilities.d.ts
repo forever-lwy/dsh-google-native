@@ -21,6 +21,7 @@ export declare const NATIVE_TOOL_FIELDS: {
     readonly codeExecution: "codeExecution";
     readonly maps: "googleMaps";
 };
+export declare function acceptsOffice(profile: GoogleProfile, model: GoogleModelConfig | undefined): boolean;
 /** No family/prefix matching: an unknown ID only exposes explicitly declared capabilities. */
 export declare function resolveCapabilities(provider: string, model: {
     id: string;

@@ -20,6 +20,7 @@ declare const preferenceSchema: z.ZodObject<{
             maps: z.ZodBoolean;
         }, z.core.$strict>;
     }, z.core.$strict>>;
+    nativeFiles: z.ZodOptional<z.ZodBoolean>;
 }, z.core.$strict>;
 type Preferences = z.infer<typeof preferenceSchema>;
 declare module '@deepseek-ai/cordis' {
@@ -55,6 +56,7 @@ export declare class GoogleChatControls extends TypertRemoteService {
     set(request: GoogleChatSetRequest, signal: AbortSignal): Promise<GoogleChatSnapshot>;
     /** Current switches of one model in this session, used when the active route is known. */
     choicesFor(session: Session, provider: string, model: string): GoogleChatChoices;
+    nativeFilesFor(session: Session): boolean;
     capture(session: Session): GoogleChatSourceSnapshot;
     stamp(agent: Agent, message: UserMessage): void;
 }
